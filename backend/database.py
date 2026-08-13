@@ -18,7 +18,14 @@ DB_PATH = os.getenv(
 )
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
-engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
+# Background Feishu delivery and normal API requests may briefly write at the
+# same time. Let SQLite wait for the current writer instead of immediately
+# raising ``database is locked``; delivery-specific writes also retry below.
+engine = create_engine(
+    f"sqlite:///{DB_PATH}",
+    echo=False,
+    connect_args={"timeout": 10},
+)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
 
@@ -100,7 +107,7 @@ class Student(Base):
     comment_delivery_status = Column(String(20), default="not_sent")
     comment_delivery_hash = Column(String(64), default="")
     comment_delivery_error = Column(Text, default="")
-    comment_delivered_at = Column(DateTime, nullable=True)
+    comment_delivered_at = Column(DateTime(timezone=True), nullable=True)
 
     course = relationship("Course", back_populates="students")
     responses = relationship("StudentResponse", back_populates="student",

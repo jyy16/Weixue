@@ -11,6 +11,12 @@ const ratingLabel = (avg, bonusFlags, grade) => {
   return { text: band, cls: BAND_CLS[band] || BAND_CLS.未评, upgraded: Array.isArray(bonusFlags) && bonusFlags.length > 0 && band !== '未评' };
 };
 
+const DELIVERY_LABEL = {
+  sending: { text: '飞书发送中', cls: 'text-amber-700 bg-amber-50 border-amber-200' },
+  delivered: { text: '✓ 评语已送达', cls: 'text-green-700 bg-green-50 border-green-200' },
+  failed: { text: '飞书发送失败', cls: 'text-red-600 bg-red-50 border-red-200' },
+};
+
 const DIM_LABELS = {
   position: '立意（观点鲜明）', material: '选材（言之有物）',
   structure: '结构（条理清晰）', language: '语言（用词准确）',
@@ -29,7 +35,7 @@ const DIM_LABELS = {
 };
 
 export default function CommentsPage() {
-  const { students, topics, responses, currentStudentIdx, setStudentIdx, courseId, loadCourse } = useStore();
+  const { students, topics, responses, currentStudentIdx, setStudentIdx, courseId, loadCourse, refreshStudents } = useStore();
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(false);
   const [saveStatus, setSaveStatus] = useState(''); // '' | 'saving' | 'saved'
@@ -37,33 +43,163 @@ export default function CommentsPage() {
   const [batchResult, setBatchResult] = useState(null);
   const [sendStatus, setSendStatus] = useState({ kind: '', message: '' });
   const saveTimer = useRef(null);
+  const saveRequest = useRef(null);
+  const pendingSave = useRef(null);
 
   const student = students[currentStudentIdx];
 
-  // Set initial draft only when component first mounts with a student
-  const initializedRef = useRef(false);
+  // Load a draft when the selected student changes. Polling replaces student
+  // objects but keeps the same ID, so it cannot overwrite an in-progress edit.
   useEffect(() => {
-    if (student && !initializedRef.current) {
+    if (student) {
       setDraft(student.comment_draft || '');
-      initializedRef.current = true;
+      setSaveStatus('');
+      setSendStatus({ kind: '', message: '' });
     }
-  }, [student]);
+  }, [student?.id]);
 
-  // Debounced auto-save
+  // The teacher confirms delivery in Feishu after leaving this browser action
+  // idle. Keep the student records fresh so sending/delivered/failed appears on
+  // this page without requiring a manual reload or a trip to student manager.
+  useEffect(() => {
+    if (!courseId) return undefined;
+
+    let cancelled = false;
+    let timer = null;
+    const pollDeliveryStatus = async () => {
+      try {
+        await refreshStudents(courseId);
+      } catch (error) {
+        console.warn('刷新飞书投递状态失败:', error);
+      } finally {
+        if (!cancelled) timer = window.setTimeout(pollDeliveryStatus, 2000);
+      }
+    };
+
+    timer = window.setTimeout(pollDeliveryStatus, 1000);
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [courseId, refreshStudents]);
+
+  const draftMatchesSaved = Boolean(
+    student && draft === (student.comment_draft || '')
+  );
+  const currentDeliveryStatus = draftMatchesSaved && !loading && !batchLoading
+    ? student.comment_delivery_status || 'not_sent'
+    : 'not_sent';
+
+  // Reflect the asynchronous student delivery result in the action area too,
+  // so its button/message cannot contradict the status badge above.
+  useEffect(() => {
+    if (!student || !draftMatchesSaved) return;
+    if (currentDeliveryStatus === 'delivered') {
+      setSendStatus({ kind: 'delivered', message: '评语已成功送达该学生。' });
+    } else if (currentDeliveryStatus === 'sending') {
+      setSendStatus({ kind: 'delivery_sending', message: '正在通过飞书发送给学生…' });
+    } else if (currentDeliveryStatus === 'failed') {
+      setSendStatus({
+        kind: 'delivery_failed',
+        message: student.comment_delivery_error
+          ? `发送失败：${student.comment_delivery_error}`
+          : '发送失败，请重新发送确认卡后重试。',
+      });
+    } else {
+      setSendStatus(current => (
+        ['delivered', 'delivery_sending', 'delivery_failed'].includes(current.kind)
+          ? { kind: '', message: '' }
+          : current
+      ));
+    }
+  }, [
+    student?.id,
+    student?.comment_delivery_status,
+    student?.comment_delivery_error,
+    draftMatchesSaved,
+    currentDeliveryStatus,
+  ]);
+
+  const flushPendingSave = useCallback(async () => {
+    // Serialize saves so an older, slower request cannot overwrite a newer
+    // draft when the user keeps typing while the previous save is in flight.
+    if (saveRequest.current) {
+      try {
+        await saveRequest.current;
+      } catch {
+        // Continue with the newest pending text after a transient failure.
+      }
+    }
+    const pending = pendingSave.current;
+    if (!pending) return;
+    pendingSave.current = null;
+    const request = api.saveCommentDraft(
+      pending.courseId,
+      pending.studentId,
+      pending.text,
+    );
+    saveRequest.current = request;
+    try {
+      await request;
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(''), 2000);
+    } catch {
+      setSaveStatus('');
+    } finally {
+      if (saveRequest.current === request) saveRequest.current = null;
+    }
+  }, []);
+
+  // Debounced auto-save. Keep the pending payload in a ref so actions such as
+  // regeneration can flush it instead of silently discarding the edit.
   const autoSave = useCallback((text) => {
     if (!student || !courseId) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     setSaveStatus('saving');
-    saveTimer.current = setTimeout(async () => {
-      try {
-        await api.saveCommentDraft(courseId, student.id, text);
-        setSaveStatus('saved');
-        setTimeout(() => setSaveStatus(''), 2000);
-      } catch {
-        setSaveStatus('');
-      }
+    pendingSave.current = { courseId, studentId: student.id, text };
+    saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      void flushPendingSave();
     }, 800);
-  }, [student?.id, courseId]);
+  }, [student?.id, courseId, flushPendingSave]);
+
+  useEffect(() => () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const pending = pendingSave.current;
+    if (pending) {
+      pendingSave.current = null;
+      // Preserve a final edit when the user leaves the page. Avoid component
+      // state updates here because the page is already unmounting. Chain it
+      // after an in-flight save so an older request cannot finish last.
+      const current = saveRequest.current;
+      void (async () => {
+        if (current) {
+          try {
+            await current;
+          } catch {
+            // Still persist the newest pending text.
+          }
+        }
+        try {
+          await api.saveCommentDraft(pending.courseId, pending.studentId, pending.text);
+        } catch {
+          // The page is gone, so there is no useful local status to update.
+        }
+      })();
+    }
+  }, []);
+
+  const settleAutoSave = async () => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    // Another timer-triggered flush may take the pending payload while this
+    // action is waiting. Recheck until neither a request nor payload remains.
+    while (saveRequest.current || pendingSave.current) {
+      await flushPendingSave();
+    }
+  };
 
   const handleDraftChange = (e) => {
     const text = e.target.value;
@@ -104,14 +240,20 @@ export default function CommentsPage() {
 
   const generate = async () => {
     if (!student) return;
+    // Regeneration represents a new final-comment candidate. Hide every
+    // delivery indicator for the old draft immediately instead of waiting for
+    // the request and the next status poll to complete.
+    setSendStatus({ kind: '', message: '' });
+    setSaveStatus('');
     setLoading(true);
     try {
+      await settleAutoSave();
       const r = await api.generateComment(courseId, student.id);
       await loadCourse(courseId);
       setDraft(r.draft);
-      setSaveStatus('');
     } catch (e) {
-      setDraft('生成失败，请确保已完成教师批改。');
+      console.error(e);
+      setSendStatus({ kind: 'error', message: '重新生成失败，请稍后重试。' });
     }
     setLoading(false);
   };
@@ -119,7 +261,9 @@ export default function CommentsPage() {
   const batchGenerate = async () => {
     setBatchLoading(true);
     setBatchResult(null);
+    setSendStatus({ kind: '', message: '' });
     try {
+      await settleAutoSave();
       const r = await api.batchGenerateComments(courseId);
       setBatchResult(r);
       await loadCourse(courseId);
@@ -150,13 +294,19 @@ export default function CommentsPage() {
     return {
       name: st.name, idx: i, grade: st.grade,
       avg: stAvg, reviewed, hasDraft: !!st.comment_draft,
+      deliveryStatus: (
+        batchLoading || (i === currentStudentIdx && draft !== (st.comment_draft || ''))
+          ? 'not_sent'
+          : st.comment_delivery_status || 'not_sent'
+      ),
       bonus: collectBonusFlags(ss),
       passing: stAvg > 0 && stAvg >= passLine,
       passLine,
     };
   });
 
-  const handleStudentChange = (i) => {
+  const handleStudentChange = async (i) => {
+    await settleAutoSave();
     setStudentIdx(i);
     const st = students[i];
     setDraft(st?.comment_draft || '');
@@ -166,16 +316,40 @@ export default function CommentsPage() {
 
   const send = async () => {
     if (!student || !draft.trim() || sendStatus.kind === 'sending') return;
-    setSendStatus({ kind: 'sending', message: '正在保存最终评语...' });
+    setSendStatus({ kind: 'sending', message: '正在保存评语并发送教师确认卡...' });
     try {
+      await settleAutoSave();
       const result = await api.sendComment(courseId, student.id, draft.trim());
-      setSendStatus({ kind: 'sent', message: result.message });
+      if (result.status === 'delivered') {
+        setSendStatus({
+          kind: 'card_sent',
+          message: '确认卡已发送给教师，请在飞书中确认后发送给学生。',
+        });
+      } else {
+        setSendStatus({
+          kind: 'pending',
+          message: result.message || '评语已保存，但教师确认卡尚未发送，请稍后重试。',
+        });
+      }
       await loadCourse(courseId);
     } catch (error) {
       console.error(error);
-      setSendStatus({ kind: 'error', message: '保存失败，请稍后重试。' });
+      setSendStatus({
+        kind: 'error',
+        message: error?.response?.data?.detail || '保存或发送确认卡失败，请稍后重试。',
+      });
     }
   };
+
+  const sendButtonText = {
+    sending: '发送中...',
+    card_sent: '确认卡已发送给教师',
+    delivery_sending: '正在发送给学生',
+    delivered: '评语已送达',
+    delivery_failed: '重新发送确认卡',
+    pending: '重新发送确认卡',
+    error: '重新发送确认卡',
+  }[sendStatus.kind] || '发送给学生';
 
   return (
     <div className="flex flex-col gap-5">
@@ -206,6 +380,27 @@ export default function CommentsPage() {
                 </span>
                 {si.hasDraft && (
                   <span className={`ml-1 text-[10px] ${i === currentStudentIdx ? 'text-indigo-200' : 'text-green-600'}`}>✓</span>
+                )}
+                {si.deliveryStatus === 'delivered' && (
+                  <span className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded ${
+                    i === currentStudentIdx
+                      ? 'bg-emerald-200 text-emerald-900'
+                      : 'bg-emerald-100 text-emerald-700'
+                  }`}>已送达</span>
+                )}
+                {si.deliveryStatus === 'sending' && (
+                  <span className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded ${
+                    i === currentStudentIdx
+                      ? 'bg-amber-200 text-amber-900'
+                      : 'bg-amber-100 text-amber-700'
+                  }`}>发送中</span>
+                )}
+                {si.deliveryStatus === 'failed' && (
+                  <span className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded ${
+                    i === currentStudentIdx
+                      ? 'bg-red-200 text-red-900'
+                      : 'bg-red-100 text-red-700'
+                  }`}>发送失败</span>
                 )}
                 {si.reviewed > 0 && !si.hasDraft && (
                   <span className={`ml-1 text-[10px] ${i === currentStudentIdx ? 'text-indigo-200' : 'text-indigo-500'}`}>
@@ -322,7 +517,17 @@ export default function CommentsPage() {
           {/* Right: comment editor */}
           <div className="flex flex-col gap-3">
             <div className="flex justify-between items-center">
-              <h3 className="text-sm font-semibold text-slate-800">{student.name} 的评语</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-slate-800">{student.name} 的评语</h3>
+                {DELIVERY_LABEL[currentDeliveryStatus] && (
+                  <span
+                    className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${DELIVERY_LABEL[currentDeliveryStatus].cls}`}
+                    title={student.comment_delivery_error || ''}
+                  >
+                    {DELIVERY_LABEL[currentDeliveryStatus].text}
+                  </span>
+                )}
+              </div>
               <div className="flex items-center gap-2">
                 {saveStatus === 'saving' && <span className="text-[10px] text-slate-400">保存中...</span>}
                 {saveStatus === 'saved' && <span className="text-[10px] text-green-600">已自动保存</span>}
@@ -369,16 +574,28 @@ export default function CommentsPage() {
             {draft && !loading && (
               <div className="flex flex-col items-end gap-2">
                 {sendStatus.message && (
-                  <div className={`text-xs ${sendStatus.kind === 'error' ? 'text-red-600' : sendStatus.kind === 'sent' ? 'text-green-700' : 'text-slate-500'}`}>
+                  <div className={`text-xs ${
+                    sendStatus.kind === 'error'
+                      ? 'text-red-600'
+                      : sendStatus.kind === 'delivery_failed'
+                        ? 'text-red-600'
+                      : sendStatus.kind === 'card_sent'
+                        ? 'text-green-700'
+                        : sendStatus.kind === 'delivered'
+                          ? 'text-green-700'
+                        : sendStatus.kind === 'pending'
+                          ? 'text-amber-700'
+                          : 'text-slate-500'
+                  }`}>
                     {sendStatus.message}
                   </div>
                 )}
                 <button
                   onClick={send}
-                  disabled={!draft.trim() || sendStatus.kind === 'sending'}
+                  disabled={!draft.trim() || ['sending', 'card_sent', 'delivery_sending', 'delivered'].includes(sendStatus.kind)}
                   className="px-5 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium cursor-pointer hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {sendStatus.kind === 'sending' ? '保存中...' : sendStatus.kind === 'sent' ? '已保存待发送' : '发送给学生'}
+                  {sendButtonText}
                 </button>
               </div>
             )}

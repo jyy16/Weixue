@@ -100,6 +100,16 @@ const useStore = create((set, get) => ({
     }
   },
 
+  // Lightweight refresh used by the student manager while a Feishu delivery
+  // may change asynchronously. Avoid reloading topics, responses and tags on
+  // every poll, and ignore a late response after the user switches courses.
+  refreshStudents: async (cid = get().courseId) => {
+    if (!cid) return [];
+    const students = await api.getStudents(cid);
+    if (get().courseId === cid) set({ students });
+    return students;
+  },
+
   loadAllCourses: async () => {
     const list = await api.getCourses();
     set({ courses: list });

@@ -127,12 +127,17 @@ class CommentCardTests(unittest.TestCase):
     def test_student_card_is_read_only_and_contains_comment(self):
         card = BotService.build_student_comment_card(
             student_name="小雨",
-            comment="你的理由很清楚，继续保持！",
+            comment="# 我的目标\n*认真倾听*\n- 再补充一个理由",
         )
         self.assertEqual(card["header"]["template"], "green")
         self.assertIn("小雨", card["header"]["title"]["content"])
         elements = card["body"]["elements"]
-        self.assertIn("你的理由很清楚", elements[0]["content"])
+        self.assertEqual(elements[0]["tag"], "div")
+        self.assertEqual(elements[0]["text"]["tag"], "plain_text")
+        self.assertEqual(
+            elements[0]["text"]["content"],
+            "# 我的目标\n*认真倾听*\n- 再补充一个理由",
+        )
         self.assertFalse(any(e.get("tag") == "button" for e in elements))
 
 
@@ -227,6 +232,7 @@ import hashlib
 import json
 import os
 import tempfile
+from datetime import datetime, timezone
 import httpx
 
 _TEST_TMP_ROOT = os.path.join(os.path.dirname(os.getcwd()), "tmp", "tests")
@@ -465,7 +471,53 @@ results["sent_receive_id"] = sent.get("receive_id")
 results["sent_msg_type"] = sent.get("msg_type")
 db.close()
 
-# 3d. Editing the draft creates a new unsent delivery item.
+# 3d. Regenerating explicitly starts a new delivery cycle even if the model
+# happens to return byte-for-byte identical text.
+import main as main_module
+
+class SameDraftLLM:
+    async def chat(self, **kwargs):
+        return "你表达很清晰，继续加油！"
+
+main_module.LLMClient = SameDraftLLM
+db = SessionLocal()
+resp = db.get(StudentResponse, rid)
+resp.teacher_reviewed = True
+db.commit()
+db.close()
+r = client.post(
+    "/api/courses/%d/comments" % cid,
+    json={"student_id": sid},
+)
+results["regenerate_status"] = r.status_code
+db = SessionLocal()
+student = db.get(Student, sid)
+results["status_after_same_regenerate"] = student.comment_delivery_status
+results["hash_after_same_regenerate"] = student.comment_delivery_hash
+results["delivered_at_after_same_regenerate"] = (
+    student.comment_delivered_at.isoformat() if student.comment_delivered_at else None
+)
+student.comment_delivery_status = "delivered"
+student.comment_delivery_hash = hashlib.sha256(
+    student.comment_draft.encode("utf-8")
+).hexdigest()
+student.comment_delivered_at = datetime.now(timezone.utc)
+db.commit()
+db.close()
+
+# 3e. Batch regeneration follows the same new-delivery semantics.
+r = client.post("/api/courses/%d/comments/batch" % cid)
+results["batch_regenerate_status"] = r.status_code
+db = SessionLocal()
+student = db.get(Student, sid)
+results["status_after_same_batch_regenerate"] = student.comment_delivery_status
+results["hash_after_same_batch_regenerate"] = student.comment_delivery_hash
+results["delivered_at_after_same_batch_regenerate"] = (
+    student.comment_delivered_at.isoformat() if student.comment_delivered_at else None
+)
+db.close()
+
+# 3f. Editing the draft creates a new unsent delivery item.
 r = client.post(
     "/api/courses/%d/comments/save" % cid,
     json={"student_id": sid, "draft": "这是一份更新后的评语。"},
@@ -573,6 +625,14 @@ class CardCallbackAPITests(unittest.TestCase):
         self.assertEqual(result["delivery_error"], "")
         self.assertEqual(result["sent_receive_id"], "ou_student")
         self.assertEqual(result["sent_msg_type"], "interactive")
+        self.assertEqual(result["regenerate_status"], 200)
+        self.assertEqual(result["status_after_same_regenerate"], "not_sent")
+        self.assertEqual(result["hash_after_same_regenerate"], "")
+        self.assertIsNone(result["delivered_at_after_same_regenerate"])
+        self.assertEqual(result["batch_regenerate_status"], 200)
+        self.assertEqual(result["status_after_same_batch_regenerate"], "not_sent")
+        self.assertEqual(result["hash_after_same_batch_regenerate"], "")
+        self.assertIsNone(result["delivered_at_after_same_batch_regenerate"])
         self.assertEqual(result["draft_save_status"], 200)
         self.assertEqual(result["status_after_edit"], "not_sent")
         self.assertEqual(result["hash_after_edit"], "")
