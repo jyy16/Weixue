@@ -1,11 +1,11 @@
-"""One-shot Bitable bootstrap: create base + 4 tables, write .env, ensure schema, sync.
+"""One-shot Bitable bootstrap: create base + 5 tables, write .env, ensure schema, sync.
 
 Usage from backend/:
     python -m feishu.bootstrap_base [--share-email you@tenant.com] [--no-sync]
 
 Steps (all idempotent, safe to re-run):
 1. Create a Bitable app (base) if FEISHU_BITABLE_APP_TOKEN is empty.
-2. Create any missing tables among courses/topics/students/responses.
+2. Create any missing tables among courses/topics/students/responses/prep_plans.
 3. Write FEISHU_BITABLE_APP_TOKEN / FEISHU_BITABLE_TABLE_IDS back into
    backend/.env (a timestamped backup of .env is saved first).
 4. Run ensure_schema() to build fields + single-select options.

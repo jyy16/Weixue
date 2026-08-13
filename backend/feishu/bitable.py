@@ -54,6 +54,9 @@ TABLE_STUDENTS = {
 TABLE_RESPONSES = {
     "学生": FIELD_TEXT,
     "辩题": FIELD_TEXT,
+    # Course identifier so pull can filter rows per course (review issue 1);
+    # without it a per-course pull would scan the whole shared table.
+    "班级": FIELD_TEXT,
     "来源": FIELD_SINGLE_SELECT,
     "原始文本": FIELD_TEXT,
     "清洗文本": FIELD_TEXT,
@@ -163,12 +166,28 @@ class BitableService:
         )
 
     async def update_field_options(
-        self, table_id: str, field_id: str, options: list[str]
+        self,
+        table_id: str,
+        field_id: str,
+        options: list[str],
+        field_name: str = "",
+        field_type: int = 0,
     ) -> Any:
-        """Append options to a single-select field (replace-style update)."""
-        body = {
+        """Set a select field's FULL option list (PUT is a replace, not append).
+
+        Callers must merge any pre-existing options into ``options`` first —
+        anything omitted here is dropped by the API, including custom options
+        teachers added in the console. The update endpoint requires
+        field_name and type in the body (official docs), so pass them through
+        from the list_fields payload whenever available.
+        """
+        body: dict = {
             "property": {"options": [{"name": name} for name in options]},
         }
+        if field_name:
+            body["field_name"] = field_name
+        if field_type:
+            body["type"] = field_type
         return await self.client.request(
             "PUT", f"{self._base(table_id)}/fields/{field_id}", json_body=body
         )
@@ -186,6 +205,9 @@ class BitableService:
             "topics": TABLE_TOPICS,
             "students": TABLE_STUDENTS,
             "responses": TABLE_RESPONSES,
+            # prep_plans must not be missed: the table would be created empty
+            # and prep-plan pushes would fail with missing-field errors.
+            "prep_plans": TABLE_PREP_PLANS,
         }
         report: dict[str, dict] = {}
         for table_key, schema in schemas.items():
@@ -210,14 +232,23 @@ class BitableService:
                         want = SINGLE_SELECT_OPTIONS.get(field_name)
                         if not want:
                             continue
-                        have = {
-                            opt.get("name")
+                        # Keep existing options in their current order: the PUT
+                        # below is a full replace, so anything we don't send
+                        # back is dropped — including options teachers added
+                        # by hand in the console.
+                        have_names = [
+                            str(opt.get("name") or "")
                             for opt in ((field.get("property") or {}).get("options") or [])
-                        }
+                        ]
+                        have = {name for name in have_names if name}
                         missing = [name for name in want if name not in have]
                         if missing:
                             await self.update_field_options(
-                                table_id, field.get("field_id", ""), want
+                                table_id,
+                                field.get("field_id", ""),
+                                have_names + missing,
+                                field_name=field.get("field_name", ""),
+                                field_type=field.get("type", 0),
                             )
                             updated_options.append(field_name)
                     except Exception as exc:  # noqa: BLE001 - report per field

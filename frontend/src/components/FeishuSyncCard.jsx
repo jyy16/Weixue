@@ -58,7 +58,11 @@ export default function FeishuSyncCard({ courseId }) {
           `作答更新 ${resp.updated ?? 0} 条（无变化 ${resp.unchanged ?? 0}）`,
           `评语草稿更新 ${stud.updated ?? 0} 条`,
         ];
-        if (r.unmatched_remote) parts.push(`未匹配远端行 ${r.unmatched_remote}（未自动创建）`);
+        if (r.filtered === false) {
+          parts.push('远端表缺「班级」字段，本次未按课程过滤，未匹配行不计入');
+        } else if (r.unmatched_remote) {
+          parts.push(`本班未匹配远端行 ${r.unmatched_remote}（未自动创建）`);
+        }
         setSyncResult(`从表格导入完成：${parts.join('，')}`);
       }
       refresh();

@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Boolean, Text,
-    DateTime, ForeignKey, JSON
+    DateTime, ForeignKey, JSON, UniqueConstraint
 )
 from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 
@@ -330,6 +330,12 @@ class FeishuBinding(Base):
     """
 
     __tablename__ = "feishu_bindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "entity_type", "entity_id", "table_key",
+            name="uq_feishu_binding_entity",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     entity_type = Column(String(30), nullable=False)
@@ -414,4 +420,18 @@ def _migrate():
             ))
         if "last_synced_at" not in binding_cols:
             conn.execute(text("ALTER TABLE feishu_bindings ADD COLUMN last_synced_at DATETIME"))
+        # Enforce (entity_type, entity_id, table_key) uniqueness on pre-existing
+        # databases (create_all adds it on fresh ones). Dedup first, keeping the
+        # earliest row per group, then add the unique index.
+        idx_rows = conn.execute(text("PRAGMA index_list(feishu_bindings)")).fetchall()
+        if not any(row[2] for row in idx_rows):  # row[2] == unique flag
+            conn.execute(text(
+                "DELETE FROM feishu_bindings WHERE id NOT IN ("
+                "SELECT MIN(id) FROM feishu_bindings "
+                "GROUP BY entity_type, entity_id, table_key)"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_feishu_binding_entity "
+                "ON feishu_bindings (entity_type, entity_id, table_key)"
+            ))
         conn.commit()

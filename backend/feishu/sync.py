@@ -9,10 +9,16 @@ Design:
   keeps a ``last_synced_hash`` snapshot of the teacher-owned fields so pull
   can tell real remote edits apart from echoes of our own pushes.
 - Field ownership (responses table): backend owns 原始/清洗文本、AI* 列、
-  来源、更新时间; teachers own 教师评分 / 教师标签 / 教师批注 / 状态. Pull
-  only ever reads the teacher-owned columns, and only moves 状态 towards
-  教师已审 (never un-reviews). Remote rows without a local binding are
+  来源、更新时间、班级; teachers own 教师评分 / 教师标签 / 教师批注 / 状态.
+  Pull only ever reads the teacher-owned columns, and only moves 状态 towards
+  教师已审 (never un-reviews) — 状态 is a forward-only projection of local
+  state, not a truly two-way field. Remote rows without a local binding are
   reported as unmatched, never auto-created.
+- Pull fetches rows with a per-course 班级 filter so unmatched counts are not
+  polluted by other courses' rows; if the remote table predates the 班级
+  field it degrades to a full scan and marks the summary filtered=False.
+- Local entity deletion never deletes remote rows (Bitable is the teacher's
+  review surface); sync only prunes the orphaned local FeishuBinding rows.
 - Every sync is guarded: missing credentials or API errors never break the
   assessment flow. Failures are reported in the returned summary and are
   visible via GET /api/feishu/bitable/status.
@@ -39,6 +45,7 @@ from sqlalchemy.orm import Session
 
 from database import (
     Course,
+    DebateTopic,
     FeishuBinding,
     PrepPlan,
     Student,
@@ -46,7 +53,7 @@ from database import (
 )
 
 from .bitable import BitableService
-from .client import FeishuClient, FeishuConfig
+from .client import FeishuAPIError, FeishuClient, FeishuConfig
 
 TABLE_KEYS = ("courses", "topics", "students", "responses", "prep_plans")
 ENTITY_TYPE_BY_TABLE = {
@@ -76,6 +83,13 @@ _STATUS_LABELS = {"pending": "待评估", "assessed": "AI已评", "reviewed": "�
 # Teacher-owned columns per table: the only fields pull() reads back. Backend
 # pushes them too, but remote changes between pushes are treated as teacher
 # edits (detected via FeishuBinding.last_synced_hash).
+#
+# 状态 caveat (review issue 2): it is listed here, but it is in practice a
+# *forward-only projection* of local state, not a two-way field — push derives
+# it from teacher_reviewed / ai_dimension_scores, and pull only ever advances
+# it to 教师已审 (never un-reviews). A teacher reverting 状态 in Bitable has
+# no effect: the next push re-derives it from local state. Kept in this map
+# so the hash still detects genuine forward transitions.
 TEACHER_FIELDS_BY_TABLE = {
     "responses": ("教师评分", "教师标签", "教师批注", "状态"),
     "students": ("评语草稿",),
@@ -98,7 +112,7 @@ def _multi(values) -> list[str]:
 
 def _ms(dt) -> int:
     if not dt:
-        dt = datetime.utcnow()
+        dt = datetime.now(timezone.utc)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return int(dt.timestamp() * 1000)
@@ -234,6 +248,7 @@ def build_response_record(response, student, topic) -> dict:
         "fields": {
             "学生": student.name,
             "辩题": topic.title,
+            "班级": student.course.class_name if student.course else "",
             "来源": _single(source),
             "原始文本": response.raw_text or "",
             "清洗文本": response.cleaned_text or "",
@@ -245,7 +260,7 @@ def build_response_record(response, student, topic) -> dict:
             "教师标签": _multi(response.teacher_tags),
             "教师批注": response.teacher_note or "",
             "状态": _single(status),
-            "更新时间": _ms(datetime.utcnow()),
+            "更新时间": _ms(datetime.now(timezone.utc)),
         }
     }
 
@@ -275,7 +290,7 @@ def build_prep_plan_record(plan, course, topic_map: dict) -> dict:
             "讲评顺序": "\n".join(order_lines),
             "备注": "\n".join(note_lines),
             "AI总结": summary_text,
-            "更新时间": _ms(plan.updated_at or datetime.utcnow()),
+            "更新时间": _ms(plan.updated_at or datetime.now(timezone.utc)),
         }
     }
 
@@ -327,8 +342,8 @@ class BitableSyncer:
         if not keys:
             return
         binding.last_synced_hash = teacher_fields_hash(record.get("fields") or {}, keys)
-        binding.last_synced_at = datetime.utcnow()
-        db.commit()
+        binding.last_synced_at = datetime.now(timezone.utc)
+        # No commit here: push paths commit once per course (review issue 5).
 
     async def _upsert(
         self,
@@ -352,32 +367,37 @@ class BitableSyncer:
             .first()
         )
         try:
-            if binding and binding.remote_record_id:
-                await self.service.batch_update_records(
-                    table_id,
-                    [{"record_id": binding.remote_record_id, **record}],
-                )
-                self._snapshot_binding(db, binding, table_key, record)
-                return {"status": "updated"}
+            # One savepoint per entity (review issue 5): a failed push rolls
+            # back only its own local changes, so the surrounding course-level
+            # transaction survives and is committed once at the end.
+            with db.begin_nested():
+                if binding and binding.remote_record_id:
+                    await self.service.batch_update_records(
+                        table_id,
+                        [{"record_id": binding.remote_record_id, **record}],
+                    )
+                    self._snapshot_binding(db, binding, table_key, record)
+                    return {"status": "updated"}
 
-            data = await self.service.batch_create_records(table_id, [record])
-            records = (data or {}).get("records") or []
-            remote_id = str(records[0].get("record_id") or "") if records else ""
-            if not remote_id:
-                return {"status": "error", "reason": "batch_create returned no record_id"}
-            if binding is None:
-                binding = FeishuBinding(
-                    entity_type=entity_type,
-                    entity_id=entity_id,
-                    table_key=table_key,
-                )
-                db.add(binding)
-            binding.remote_record_id = remote_id
-            db.commit()
-            self._snapshot_binding(db, binding, table_key, record)
-            return {"status": "created"}
+                data = await self.service.batch_create_records(table_id, [record])
+                records = (data or {}).get("records") or []
+                remote_id = str(records[0].get("record_id") or "") if records else ""
+                if not remote_id:
+                    return {"status": "error", "reason": "batch_create returned no record_id"}
+                if binding is None:
+                    binding = FeishuBinding(
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        table_key=table_key,
+                    )
+                    db.add(binding)
+                binding.remote_record_id = remote_id
+                self._snapshot_binding(db, binding, table_key, record)
+                return {"status": "created"}
         except Exception as exc:  # noqa: BLE001 - sync must never break the main flow
-            db.rollback()
+            # begin_nested() already rolled the savepoint back; do NOT roll
+            # back the outer transaction here or sibling entities' successful
+            # pushes would be lost too.
             return {"status": "error", "reason": str(exc)}
 
     async def _sync_one(
@@ -399,6 +419,29 @@ class BitableSyncer:
         else:
             counters["errors"] += 1
 
+    def _prune_orphan_bindings(self, db: Session) -> int:
+        """Delete bindings whose local entity no longer exists (review issue 3).
+
+        Deletion of local topics/students/responses doesn't touch Bitable: the
+        remote rows stay as the teacher's review surface (we never delete
+        teacher-visible data remotely). This pruner only removes the local
+        binding rows left behind, so they can't be counted as phantom
+        unmatched rows or block a re-created entity from binding cleanly.
+        """
+        live_ids = {
+            "course": {row[0] for row in db.query(Course.id)},
+            "topic": {row[0] for row in db.query(DebateTopic.id)},
+            "student": {row[0] for row in db.query(Student.id)},
+            "response": {row[0] for row in db.query(StudentResponse.id)},
+            "prep_plan": {row[0] for row in db.query(PrepPlan.id)},
+        }
+        removed = 0
+        for binding in db.query(FeishuBinding).all():
+            if binding.entity_id not in live_ids.get(binding.entity_type, set()):
+                db.delete(binding)
+                removed += 1
+        return removed
+
     async def sync_course(self, db: Session, course_id: int) -> dict:
         if not self.available:
             return {"configured": False, "mode": "deferred", "tables": {}}
@@ -413,6 +456,7 @@ class BitableSyncer:
         if not course:
             return {"configured": True, "error": "course not found"}
 
+        summary["pruned_bindings"] = self._prune_orphan_bindings(db)
         await self._sync_one(db, "courses", course, build_course_record(course), summary)
         for topic in course.topics:
             await self._sync_one(db, "topics", topic, build_topic_record(topic), summary)
@@ -442,6 +486,11 @@ class BitableSyncer:
                 build_prep_plan_record(plan, course, topic_map),
                 summary,
             )
+        try:
+            db.commit()  # one transaction per course push (review issue 5)
+        except Exception as exc:  # noqa: BLE001 - sync must never break the app
+            db.rollback()
+            summary["error"] = f"commit failed: {exc}"
         return summary
 
     async def sync_prep_plan(self, db: Session, course_id: int) -> dict:
@@ -468,6 +517,11 @@ class BitableSyncer:
             build_prep_plan_record(plan, course, topic_map),
             summary,
         )
+        try:
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            summary["error"] = f"commit failed: {exc}"
         return summary
 
     async def sync_response(self, db: Session, response_id: int) -> dict:
@@ -489,16 +543,21 @@ class BitableSyncer:
             build_response_record(resp, resp.student, resp.topic),
             summary,
         )
+        try:
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            summary["error"] = f"commit failed: {exc}"
         return summary
 
     # ── Pull: import teacher edits from Bitable back into the local DB ──
 
-    async def _iter_remote_records(self, table_id: str):
+    async def _iter_remote_records(self, table_id: str, filter_spec: Optional[dict] = None):
         """Yield all records of a table, following search pagination."""
         page_token = ""
         while True:
             data = await self.service.search_records(
-                table_id, page_size=500, page_token=page_token
+                table_id, page_size=500, page_token=page_token, filter_spec=filter_spec
             )
             data = data or {}
             for item in data.get("items") or []:
@@ -509,7 +568,38 @@ class BitableSyncer:
             if not page_token:
                 break
 
-    async def _pull_responses(self, db: Session, course_id: int, summary: dict) -> None:
+    async def _scan_table(
+        self, table_id: str, class_name: str, process, summary: dict
+    ) -> None:
+        """Iterate one table's rows, filtered to the current course.
+
+        The filter needs the 班级 text column (added to both responses and
+        students schemas for review issue 1). If the remote table predates
+        that field the filtered search fails, so we fall back to a full scan
+        but stop counting unmatched rows: without the filter, rows of other
+        courses are indistinguishable from genuine orphans and the counter
+        would be misleading.
+        """
+        if not class_name:
+            summary["filtered"] = False
+            async for record in self._iter_remote_records(table_id):
+                process(record, False)
+            return
+        filter_spec = {
+            "conjunction": "and",
+            "conditions": [
+                {"field_name": "班级", "operator": "is", "value": [class_name]},
+            ],
+        }
+        try:
+            async for record in self._iter_remote_records(table_id, filter_spec):
+                process(record, True)
+        except FeishuAPIError:
+            summary["filtered"] = False
+            async for record in self._iter_remote_records(table_id):
+                process(record, False)
+
+    async def _pull_responses(self, db: Session, course: Course, summary: dict) -> None:
         table_id = self._table_id("responses")
         keys = TEACHER_FIELDS_BY_TABLE["responses"]
         counters = summary["tables"]["responses"]
@@ -517,7 +607,7 @@ class BitableSyncer:
         responses = (
             db.query(StudentResponse)
             .join(Student, StudentResponse.student_id == Student.id)
-            .filter(Student.course_id == course_id)
+            .filter(Student.course_id == course.id)
             .all()
         )
         if not responses:
@@ -534,13 +624,14 @@ class BitableSyncer:
         )
         remote_map = {b.remote_record_id: (b, by_entity[b.entity_id]) for b in bindings}
 
-        async for record in self._iter_remote_records(table_id):
+        def process(record: dict, count_unmatched: bool) -> None:
             remote_id = str(record.get("record_id") or "")
             fields = record.get("fields") or {}
             match = remote_map.get(remote_id)
             if match is None:
-                summary["unmatched_remote"] += 1
-                continue
+                if count_unmatched:
+                    summary["unmatched_remote"] += 1
+                return
             binding, resp = match
             counters["checked"] += 1
             normalized = {
@@ -555,12 +646,12 @@ class BitableSyncer:
                 # remote state as the baseline instead of applying it, so an
                 # empty/stale remote can't wipe locally-entered reviews.
                 binding.last_synced_hash = remote_hash
-                binding.last_synced_at = datetime.utcnow()
+                binding.last_synced_at = datetime.now(timezone.utc)
                 counters["unchanged"] += 1
-                continue
+                return
             if remote_hash == binding.last_synced_hash:
                 counters["unchanged"] += 1
-                continue
+                return
             resp.teacher_note = normalized["教师批注"]
             resp.teacher_tags = normalized["教师标签"]
             resp.teacher_dimension_scores = _parse_score_summary(normalized["教师评分"])
@@ -569,16 +660,18 @@ class BitableSyncer:
             if normalized["状态"] == _STATUS_LABELS["reviewed"]:
                 resp.teacher_reviewed = True
             binding.last_synced_hash = remote_hash
-            binding.last_synced_at = datetime.utcnow()
+            binding.last_synced_at = datetime.now(timezone.utc)
             counters["updated"] += 1
 
-    async def _pull_students(self, db: Session, course_id: int, summary: dict) -> None:
+        await self._scan_table(table_id, course.class_name, process, summary)
+
+    async def _pull_students(self, db: Session, course: Course, summary: dict) -> None:
         table_id = self._table_id("students")
         keys = TEACHER_FIELDS_BY_TABLE["students"]
         counters = summary["tables"]["students"]
 
         students = (
-            db.query(Student).filter(Student.course_id == course_id).all()
+            db.query(Student).filter(Student.course_id == course.id).all()
         )
         if not students:
             return
@@ -594,40 +687,50 @@ class BitableSyncer:
         )
         remote_map = {b.remote_record_id: (b, by_entity[b.entity_id]) for b in bindings}
 
-        async for record in self._iter_remote_records(table_id):
+        def process(record: dict, count_unmatched: bool) -> None:
             remote_id = str(record.get("record_id") or "")
             fields = record.get("fields") or {}
             match = remote_map.get(remote_id)
             if match is None:
-                summary["unmatched_remote"] += 1
-                continue
+                if count_unmatched:
+                    summary["unmatched_remote"] += 1
+                return
             binding, student = match
             counters["checked"] += 1
             normalized = {"评语草稿": _field_str(fields.get("评语草稿"))}
             remote_hash = teacher_fields_hash(normalized, keys)
             if not (binding.last_synced_hash or ""):
                 binding.last_synced_hash = remote_hash
-                binding.last_synced_at = datetime.utcnow()
+                binding.last_synced_at = datetime.now(timezone.utc)
                 counters["unchanged"] += 1
-                continue
+                return
             if remote_hash == binding.last_synced_hash:
                 counters["unchanged"] += 1
-                continue
+                return
             remote_draft = normalized["评语草稿"]
             if remote_draft != (student.comment_draft or ""):
                 student.comment_draft = remote_draft
+                # PR #14: a fresh teacher draft invalidates any prior delivery.
                 student.comment_delivery_status = "not_sent"
                 student.comment_delivery_hash = ""
                 student.comment_delivery_error = ""
                 student.comment_delivered_at = None
             binding.last_synced_hash = remote_hash
-            binding.last_synced_at = datetime.utcnow()
+            binding.last_synced_at = datetime.now(timezone.utc)
             counters["updated"] += 1
+
+        await self._scan_table(table_id, course.class_name, process, summary)
 
     async def pull_course(self, db: Session, course_id: int) -> dict:
         """Pull teacher-owned edits (教师评分/标签/批注/状态, 评语草稿) from
         Bitable back into the local DB for one course. Manual trigger only;
-        remote rows without a local binding are counted, never auto-created."""
+        remote rows without a local binding are counted, never auto-created.
+
+        The count is only meaningful when ``filtered`` stays True: rows are
+        then fetched with a per-course 班级 filter, so every unmatched row
+        really belongs to this course. If the remote table lacks the field we
+        degrade to a full scan and report filtered=False (review issue 1).
+        """
         if not self.available:
             return {"configured": False, "mode": "deferred", "tables": {}}
         course = db.get(Course, course_id)
@@ -641,12 +744,14 @@ class BitableSyncer:
                 for key in ("responses", "students")
             },
             "unmatched_remote": 0,
+            "filtered": True,
         }
         try:
+            summary["pruned_bindings"] = self._prune_orphan_bindings(db)
             if self._table_id("responses"):
-                await self._pull_responses(db, course_id, summary)
+                await self._pull_responses(db, course, summary)
             if self._table_id("students"):
-                await self._pull_students(db, course_id, summary)
+                await self._pull_students(db, course, summary)
             db.commit()
         except Exception as exc:  # noqa: BLE001 - pull must never break the app
             db.rollback()

@@ -1,4 +1,4 @@
-"""Command-line bootstrap for the four Bitable tables (fields + options).
+"""Command-line bootstrap for the five Bitable tables (fields + options).
 
 Usage from backend/:
     python -m feishu.schema --apply
