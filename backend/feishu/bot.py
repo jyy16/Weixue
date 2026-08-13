@@ -203,10 +203,19 @@ class BotService:
             "body": {
                 "direction": "vertical",
                 "elements": [
-                    {"tag": "markdown", "content": safe_comment},
                     {
-                        "tag": "markdown",
-                        "content": "---\n*这份反馈已经过老师确认，请继续保持思考与表达。*",
+                        "tag": "div",
+                        "text": {
+                            "tag": "plain_text",
+                            "content": safe_comment,
+                        },
+                    },
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "plain_text",
+                            "content": "这份反馈已经过老师确认，请继续保持思考与表达。",
+                        },
                     },
                 ],
             },

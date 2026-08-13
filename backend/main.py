@@ -1478,10 +1478,12 @@ async def generate_comment(cid: int, body: CommentRequest, db: Session = Depends
         # Fallback to template if LLM fails
         draft = _fallback_comment(student, topic_data, dim_labels)
 
-    # Auto-save the draft. A changed comment is a new delivery item.
-    if draft != (student.comment_draft or ""):
-        student.comment_draft = draft
-        _reset_comment_delivery(student)
+    # Generating again is an explicit request for a new delivery item. Reset
+    # the old result even if the model happens to produce identical text;
+    # otherwise the UI would incorrectly keep showing the previous delivery as
+    # covering this newly generated draft.
+    student.comment_draft = draft
+    _reset_comment_delivery(student)
     db.commit()
 
     return CommentOut(draft=draft)
@@ -1723,10 +1725,11 @@ async def batch_generate_comments(cid: int, db: Session = Depends(get_db)):
                 max_tokens=600,
             )
             draft = draft.strip()
-            # Auto-save the draft
-            if draft != (student.comment_draft or ""):
-                student.comment_draft = draft
-                _reset_comment_delivery(student)
+            # Batch regeneration has the same semantics as regenerating one
+            # student: every successful result starts a new delivery cycle,
+            # even if the model happens to return identical text.
+            student.comment_draft = draft
+            _reset_comment_delivery(student)
             db.commit()
             results.append({
                 "student_id": student.id,

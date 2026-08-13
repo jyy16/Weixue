@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import useStore from '../stores/gradingStore';
 import * as api from '../api/client';
 
@@ -25,7 +25,7 @@ const parseBatchLine = (line) => {
 };
 
 export default function StudentsManager() {
-  const { courseId, topics, students, responses, loadCourse } = useStore();
+  const { courseId, topics, students, responses, loadCourse, refreshStudents } = useStore();
   const [batchText, setBatchText] = useState('');
   const [adding, setAdding] = useState(false);
   const [msg, setMsg] = useState('');
@@ -35,6 +35,33 @@ export default function StudentsManager() {
   const [singleName, setSingleName] = useState('');
   const [singleGrade, setSingleGrade] = useState(4);
   const [singleMsg, setSingleMsg] = useState('');
+
+  // Card callbacks deliver comments in a background task, so their status can
+  // change after this page has rendered. Poll only the lightweight students
+  // endpoint while this page is open; leaving the page cancels the next poll.
+  useEffect(() => {
+    if (!courseId) return undefined;
+
+    let cancelled = false;
+    let timer = null;
+    const pollDeliveryStatus = async () => {
+      try {
+        await refreshStudents(courseId);
+      } catch (error) {
+        // A transient refresh failure should not replace the currently visible
+        // student list. The next poll will retry automatically.
+        console.warn('刷新飞书投递状态失败:', error);
+      } finally {
+        if (!cancelled) timer = window.setTimeout(pollDeliveryStatus, 2000);
+      }
+    };
+
+    timer = window.setTimeout(pollDeliveryStatus, 1000);
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [courseId, refreshStudents]);
 
   const topicMap = {};
   topics.forEach(t => { topicMap[t.id] = t; });
@@ -145,7 +172,12 @@ export default function StudentsManager() {
 
       {/* 学生列表 */}
       <div className="bg-white rounded-xl p-4 border border-slate-200">
-        <div className="text-sm font-semibold text-slate-600 mb-3">学生列表（{students.length}）</div>
+        <div className="text-sm font-semibold text-slate-600 mb-3 flex items-center gap-2">
+          <span>学生列表（{students.length}）</span>
+          {students.some(st => st.comment_delivery_status === 'sending') && (
+            <span className="text-[11px] font-normal text-amber-600">正在自动刷新飞书投递状态…</span>
+          )}
+        </div>
         <div className="flex flex-col gap-2">
           {students.map(st => {
             const studentResponses = (responses[st.id] || []).filter(r => r.raw_text && r.raw_text.trim());

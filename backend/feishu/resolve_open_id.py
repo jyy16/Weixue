@@ -8,9 +8,10 @@ The result is the open_id of that user *under this app* (open_id is per-app).
 Use a teacher result as FEISHU_TEACHER_OPEN_ID; bind student results in the
 Web app's 学生管理 page.
 
-Requires the app scope contact:user.id:readonly and that the target user is
-inside the app's contact visibility scope. When the scope is missing the Feishu
-error message contains a console link to grant it.
+Requires the application scope “通过手机号或邮箱获取用户 ID”
+(`contact:user.id:readonly`) and that the target user is inside the app's data
+permission/availability scope. When the scope is missing the Feishu error
+message contains a console link to grant it.
 """
 
 import argparse
@@ -65,8 +66,10 @@ def main() -> None:
     except FeishuAPIError as exc:
         print(f"查询失败：{exc}")
         if "99991672" in str(exc):
-            print("\n应用缺少通讯录权限：点上面报错里的链接，开通 "
-                  "contact:user.id:readonly 后重试。")
+            print(
+                "\n应用缺少通讯录权限：点上面报错里的链接，开通“通过手机号或邮箱获取用户 ID”"
+                "（contact:user.id:readonly）后发布新版本并重试。"
+            )
         return
 
     items = (result or {}).get("user_list") or []
@@ -82,7 +85,10 @@ def main() -> None:
                 "学生账号：在网页端“学生管理”中绑定。"
             )
         else:
-            print(f"未找到：{lookup}（该账号不在应用可见范围内，或手机号/邮箱不匹配）")
+            print(
+                f"未找到：{lookup}（该账号不在应用可用范围/通讯录数据权限范围内，"
+                "或手机号/邮箱不匹配）"
+            )
     if not found:
         print("\n原始返回：" + json.dumps(result, ensure_ascii=False)[:500])
 

@@ -493,8 +493,15 @@ export const clearCourseResponses = (cid) => {
 
 // ── Comments ────────────────────────────────────────────
 export const generateComment = (cid, studentId) => {
-  const s = _data.students.find(s => s.id === studentId);
-  return ok({ student_id: studentId, draft: s?.comment_draft || '' });
+  const student = _data.students.find(s => s.id === studentId && s.course_id === cid);
+  if (!student) return Promise.reject(new Error('Student not found'));
+  // Regeneration starts a new delivery cycle even when the demo text itself is
+  // unchanged, matching the real backend semantics.
+  student.comment_delivery_status = 'not_sent';
+  student.comment_delivery_error = '';
+  student.comment_delivered_at = null;
+  _persist();
+  return ok({ student_id: studentId, draft: student.comment_draft || '' });
 };
 export const saveCommentDraft = (cid, studentId, draft) => {
   const student = _data.students.find(s => s.id === studentId && s.course_id === cid);
@@ -525,16 +532,23 @@ export const sendComment = (cid, studentId, draft) => {
     message: '评语已保存并标记待发送；飞书机器人发送通道将在后续联调中接入。',
   });
 };
-export const batchGenerateComments = (cid) => ok({
-  results: _data.students
-    .filter(student => student.course_id === cid)
-    .map(student => ({
+export const batchGenerateComments = (cid) => {
+  const students = _data.students.filter(student => student.course_id === cid);
+  students.forEach(student => {
+    student.comment_delivery_status = 'not_sent';
+    student.comment_delivery_error = '';
+    student.comment_delivered_at = null;
+  });
+  _persist();
+  return ok({
+    results: students.map(student => ({
       student_id: student.id,
       student_name: student.name,
       draft: student.comment_draft || '',
       error: null,
     })),
-});
+  });
+};
 
 // ── Prep Analytics ──────────────────────────────────────
 export const getPrepAnalytics = (cid) => {

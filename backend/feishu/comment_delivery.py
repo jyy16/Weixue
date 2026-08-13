@@ -1,12 +1,107 @@
 """Reliable, per-student Feishu delivery for teacher-approved comments."""
 
-from datetime import datetime
+import asyncio
+from datetime import datetime, timezone
 from typing import Optional
+
+from sqlalchemy.exc import OperationalError
 
 from database import SessionLocal, Student
 
 from .bot import BotService
 from .client import FeishuClient, FeishuConfig
+
+
+def _read_delivery_snapshot(
+    student_id: int,
+    expected_hash: str,
+) -> Optional[tuple[str, str, str]]:
+    """Read the reserved delivery data in a short-lived synchronous session."""
+    db = SessionLocal()
+    try:
+        student = db.get(Student, student_id)
+        if not student:
+            return None
+        if (
+            student.comment_delivery_status != "sending"
+            or student.comment_delivery_hash != expected_hash
+        ):
+            return None
+        return (
+            (student.feishu_open_id or "").strip(),
+            (student.comment_draft or "").strip(),
+            student.name,
+        )
+    finally:
+        db.close()
+
+
+def _persist_delivery_result_once(
+    student_id: int,
+    expected_hash: str,
+    *,
+    status: str,
+    error: str,
+    delivered_at: Optional[datetime],
+) -> bool:
+    db = SessionLocal()
+    try:
+        updated = (
+            db.query(Student)
+            .filter(
+                Student.id == student_id,
+                Student.comment_delivery_status == "sending",
+                Student.comment_delivery_hash == expected_hash,
+            )
+            .update(
+                {
+                    Student.comment_delivery_status: status,
+                    Student.comment_delivery_error: error[:500],
+                    Student.comment_delivered_at: delivered_at,
+                },
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        return bool(updated)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+async def _persist_delivery_result(
+    student_id: int,
+    expected_hash: str,
+    *,
+    status: str,
+    error: str = "",
+    delivered_at: Optional[datetime] = None,
+    attempts: int = 3,
+) -> bool:
+    """Persist a result without overwriting a newer draft/delivery attempt.
+
+    SQLite permits one writer at a time. Its connection timeout handles normal
+    contention; these short retries cover the remaining narrow lock window.
+    """
+    for attempt in range(attempts):
+        try:
+            # SQLite and SQLAlchemy are synchronous. Offload the whole
+            # transaction so lock waits cannot block Feishu's event loop.
+            return await asyncio.to_thread(
+                _persist_delivery_result_once,
+                student_id,
+                expected_hash,
+                status=status,
+                error=error,
+                delivered_at=delivered_at,
+            )
+        except OperationalError as exc:
+            if "database is locked" not in str(exc).lower() or attempt == attempts - 1:
+                raise
+        await asyncio.sleep(0.15 * (attempt + 1))
+    return False
 
 
 async def deliver_student_comment(
@@ -23,24 +118,26 @@ async def deliver_student_comment(
     if client is None:
         client = FeishuClient(FeishuConfig())
 
-    db = SessionLocal()
     try:
-        student = db.get(Student, student_id)
-        if not student:
+        # Read the reserved delivery snapshot, then close the session before
+        # the network request. This avoids holding a SQLite transaction or
+        # connection while waiting for Feishu.
+        snapshot = await asyncio.to_thread(
+            _read_delivery_snapshot,
+            student_id,
+            expected_hash,
+        )
+        if snapshot is None:
             return
-        if (
-            student.comment_delivery_status != "sending"
-            or student.comment_delivery_hash != expected_hash
-        ):
-            return
+        open_id, comment, name = snapshot
 
-        open_id = (student.feishu_open_id or "").strip()
-        comment = (student.comment_draft or "").strip()
-        name = student.name
         if not open_id or not comment:
-            student.comment_delivery_status = "failed"
-            student.comment_delivery_error = "学生账号未绑定或评语为空"
-            db.commit()
+            await _persist_delivery_result(
+                student_id,
+                expected_hash,
+                status="failed",
+                error="学生账号未绑定或评语为空",
+            )
             return
 
         card = BotService.build_student_comment_card(
@@ -50,21 +147,19 @@ async def deliver_student_comment(
         try:
             await BotService(client).send_card(open_id, card)
         except Exception as exc:
-            db.refresh(student)
-            if student.comment_delivery_hash == expected_hash:
-                student.comment_delivery_status = "failed"
-                student.comment_delivery_error = str(exc)[:500]
-                student.comment_delivered_at = None
-                db.commit()
-            return
-
-        db.refresh(student)
-        if student.comment_delivery_hash == expected_hash:
-            student.comment_delivery_status = "delivered"
-            student.comment_delivery_error = ""
-            student.comment_delivered_at = datetime.utcnow()
-            db.commit()
+            await _persist_delivery_result(
+                student_id,
+                expected_hash,
+                status="failed",
+                error=str(exc),
+            )
+        else:
+            await _persist_delivery_result(
+                student_id,
+                expected_hash,
+                status="delivered",
+                delivered_at=datetime.now(timezone.utc),
+            )
     finally:
-        db.close()
         if owns_client:
             await client.close()
