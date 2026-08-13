@@ -100,6 +100,7 @@ class Student(Base):
     name = Column(String(100), nullable=False)
     grade = Column(Integer, nullable=False)   # 1-7
     comment_draft = Column(Text, default="")  # saved comment draft
+    phone = Column(String(30), default="")    # mobile for future Feishu push
     # The user's identity is scoped to the current Feishu app.  It is stored on
     # the student rather than in environment variables so each comment can be
     # routed to the matching recipient.
@@ -395,6 +396,8 @@ def _migrate():
             conn.execute(text("ALTER TABLE students ADD COLUMN comment_delivery_error TEXT DEFAULT ''"))
         if "comment_delivered_at" not in student_cols:
             conn.execute(text("ALTER TABLE students ADD COLUMN comment_delivered_at DATETIME"))
+        if "phone" not in student_cols:
+            conn.execute(text("ALTER TABLE students ADD COLUMN phone VARCHAR(30) DEFAULT ''"))
 
         cols = {row[1] for row in conn.execute(text("PRAGMA table_info(student_responses)"))}
         if "source" not in cols:

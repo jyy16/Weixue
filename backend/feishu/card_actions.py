@@ -102,11 +102,11 @@ def _card_send_comment(
         course_id = 0
     if course_id and student.course_id != course_id:
         return {"toast": {"type": "error", "content": "卡片与学生信息不匹配"}}
-    if not (student.feishu_open_id or "").strip():
+    if not (student.feishu_open_id or "").strip() and not (student.phone or "").strip():
         return {
             "toast": {
                 "type": "warning",
-                "content": f"{student.name}尚未绑定飞书账号，请先在学生管理中绑定",
+                "content": f"{student.name}尚未绑定飞书账号或手机号，请先在学生管理中绑定",
             }
         }
     if not (student.comment_draft or "").strip():

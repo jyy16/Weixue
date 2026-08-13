@@ -149,6 +149,24 @@ export const setSystemModeAction = async (action) => {
     : api.post('/settings/mode', { action }).then(r => r.data);
 };
 
+// ── In-app settings (LLM / ASR / Feishu / Bitable) ─────
+export const getSettings = async () => {
+  const demo = await _demoImpl();
+  return demo ? demo.getSettings() : api.get('/settings').then(r => r.data);
+};
+export const updateSettings = async (settings) => {
+  const demo = await _demoImpl();
+  return demo
+    ? demo.updateSettings(settings)
+    : api.put('/settings', { settings }).then(r => r.data);
+};
+export const testSettings = async (section) => {
+  const demo = await _demoImpl();
+  return demo
+    ? demo.testSettings(section)
+    : api.post(`/settings/test/${section}`).then(r => r.data);
+};
+
 // ── AI Companion (live classroom) ──────────────────────
 const _withTimeout = (promise, ms, label) => {
   let timer;

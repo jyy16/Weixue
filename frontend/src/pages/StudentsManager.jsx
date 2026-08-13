@@ -34,6 +34,7 @@ export default function StudentsManager() {
 
   const [singleName, setSingleName] = useState('');
   const [singleGrade, setSingleGrade] = useState(4);
+  const [singlePhone, setSinglePhone] = useState('');
   const [singleMsg, setSingleMsg] = useState('');
 
   // Card callbacks deliver comments in a background task, so their status can
@@ -101,9 +102,12 @@ export default function StudentsManager() {
       return;
     }
     setAdding(true);
-    await addStudents([{ name: singleName.trim(), grade: parseInt(singleGrade, 10) || 4 }], m => setSingleMsg(m));
+    await addStudents([
+      { name: singleName.trim(), grade: parseInt(singleGrade, 10) || 4, phone: singlePhone.trim() },
+    ], m => setSingleMsg(m));
     setAdding(false);
     setSingleName('');
+    setSinglePhone('');
   };
 
   const handleDelete = async (st) => {
@@ -138,6 +142,12 @@ export default function StudentsManager() {
           >
             {[1, 2, 3, 4, 5, 6, 7].map(g => <option key={g} value={g}>{g}年级</option>)}
           </select>
+          <input
+            value={singlePhone}
+            onChange={e => setSinglePhone(e.target.value)}
+            placeholder="手机号（可选，用于飞书推送）"
+            className="flex-1 max-w-[220px] text-sm border border-slate-200 rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-indigo-300"
+          />
           <button
             onClick={handleSingleAdd}
             disabled={adding || !singleName.trim()}
@@ -198,6 +208,7 @@ export default function StudentsManager() {
                     <div className="text-sm text-slate-600 w-20">{st.grade}年级</div>
                     <div className="flex-1 flex items-center gap-2 text-xs text-slate-400">
                       <span>{countByStudent[st.id] || 0} 份作答</span>
+                      {st.phone && <span className="truncate max-w-[130px]">📱 {st.phone}</span>}
                       <span className={`px-1.5 py-0.5 rounded ${st.feishu_open_id ? 'text-blue-700 bg-blue-50' : 'text-slate-500 bg-slate-100'}`}>
                         {st.feishu_open_id ? '飞书已绑定' : '飞书未绑定'}
                       </span>
@@ -267,6 +278,7 @@ function EditRow({ student, onDone, onCancel }) {
   const [name, setName] = useState(student.name);
   const [grade, setGrade] = useState(student.grade);
   const [feishuOpenId, setFeishuOpenId] = useState(student.feishu_open_id || '');
+  const [phone, setPhone] = useState(student.phone || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -283,6 +295,7 @@ function EditRow({ student, onDone, onCancel }) {
       await api.updateStudent(student.id, {
         name: name.trim(),
         grade: parseInt(grade, 10) || student.grade,
+        phone: phone.trim(),
         feishu_open_id: openId,
       });
       await onDone();
@@ -306,6 +319,12 @@ function EditRow({ student, onDone, onCancel }) {
           {[1, 2, 3, 4, 5, 6, 7].map(g => <option key={g} value={g}>{g}年级</option>)}
         </select>
         <input
+          value={phone}
+          onChange={e => setPhone(e.target.value)}
+          placeholder="手机号（可选）"
+          className="w-36 text-sm border border-slate-200 rounded-lg px-2 py-1.5 outline-none focus:ring-1 focus:ring-indigo-300"
+        />
+        <input
           value={feishuOpenId}
           onChange={e => setFeishuOpenId(e.target.value)}
           placeholder="学生飞书 open_id（ou_...）"
@@ -323,7 +342,7 @@ function EditRow({ student, onDone, onCancel }) {
         </button>
       </div>
       <div className="text-[11px] text-slate-400">
-        留空表示解除绑定；open_id 可用项目中的飞书查询脚本按手机号或邮箱获取。
+        手机号可选；飞书 open_id 留空表示解除绑定（可用飞书查询脚本按手机号或邮箱获取）。
         {error && <span className="ml-2 text-red-500">{error}</span>}
       </div>
     </div>

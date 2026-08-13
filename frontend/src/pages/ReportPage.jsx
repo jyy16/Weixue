@@ -177,10 +177,18 @@ function ParentReportView({ report, loading, onBack }) {
 
         <div className="flex flex-col gap-4">
           <div className="bg-white rounded-xl p-5 border border-slate-200">
-            <h3 className="text-sm font-semibold text-slate-800 mb-2">教师评语</h3>
-            <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">
-              {report.teacher_comment || '暂未填写评语。'}
-            </p>
+            <h3 className="text-sm font-semibold text-slate-800 mb-2">亮点回答（得分最高）</h3>
+            {report.best_answer ? (
+              <div>
+                <div className="text-xs text-slate-400 mb-1.5">
+                  {report.best_answer.topic_title ? `辩题：${report.best_answer.topic_title}` : ''}
+                  {report.best_answer.score != null && ` · 均分 ${report.best_answer.score.toFixed(1)}/4.0`}
+                </div>
+                <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{report.best_answer.text}</p>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-400">暂无作答记录。</p>
+            )}
           </div>
           <div className="bg-white rounded-xl p-5 border border-slate-200">
             <h3 className="text-sm font-semibold text-slate-800 mb-2">综合评价</h3>
@@ -205,12 +213,10 @@ function ParentReportView({ report, loading, onBack }) {
       </div>
 
       <div className="bg-white rounded-xl p-5 border border-slate-200">
-        <h3 className="text-sm font-semibold text-slate-800 mb-3">给家长的建议</h3>
-        <ul className="list-disc pl-5 space-y-1.5">
-          {(report.next_steps || []).map((step, i) => (
-            <li key={i} className="text-sm text-slate-600">{step}</li>
-          ))}
-        </ul>
+        <h3 className="text-sm font-semibold text-slate-800 mb-2">教师评语</h3>
+        <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">
+          {report.teacher_comment || '暂未填写评语。'}
+        </p>
       </div>
     </div>
   );

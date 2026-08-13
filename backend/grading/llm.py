@@ -1,4 +1,4 @@
-"""LLM provider adapter. Supports OpenAI-compatible APIs (DashScope, DeepSeek, etc.)."""
+"""LLM provider adapter. Supports OpenAI-compatible APIs and Anthropic Messages."""
 
 import os, json, httpx
 from typing import Optional
@@ -10,14 +10,27 @@ PROVIDER_CONFIG = {
     "dashscope": {
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "default_model": "qwen-plus",
+        "api": "openai",
     },
     "openai": {
         "base_url": "https://api.openai.com/v1",
         "default_model": "gpt-4o-mini",
+        "api": "openai",
     },
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1",
         "default_model": "deepseek-chat",
+        "api": "openai",
+    },
+    "anthropic": {
+        "base_url": "https://api.anthropic.com/v1",
+        "default_model": "claude-3-5-sonnet-20241022",
+        "api": "anthropic",
+    },
+    "custom": {
+        "base_url": "",
+        "default_model": "",
+        "api": "openai",
     },
 }
 
@@ -30,13 +43,18 @@ class LLMClient:
         provider: Optional[str] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        base_url: Optional[str] = None,
     ):
-        self.provider = provider or os.getenv("LLM_PROVIDER") or "dashscope"
-        cfg = PROVIDER_CONFIG.get(self.provider, PROVIDER_CONFIG["dashscope"])
+        self.provider = (provider or os.getenv("LLM_PROVIDER") or "dashscope").lower().strip()
+        cfg = PROVIDER_CONFIG.get(self.provider, PROVIDER_CONFIG["custom"])
+        self.api_style = cfg.get("api", "openai")
 
         self.api_key = api_key or os.getenv("LLM_API_KEY", "")
-        self.model = model or os.getenv("LLM_MODEL") or cfg["default_model"]
-        self.base_url = (os.getenv("LLM_BASE_URL") or "").strip().rstrip("/") or cfg["base_url"]
+        self.model = model or os.getenv("LLM_MODEL") or cfg.get("default_model", "")
+        self.base_url = (
+            (base_url or os.getenv("LLM_BASE_URL") or "").strip().rstrip("/")
+            or cfg.get("base_url", "")
+        )
 
     async def chat(
         self,
@@ -44,6 +62,17 @@ class LLMClient:
         temperature: float = 0.3,
         max_tokens: int = 2000,
         timeout: float = 120.0,
+    ) -> str:
+        if self.api_style == "anthropic":
+            return await self._chat_anthropic(messages, temperature, max_tokens, timeout)
+        return await self._chat_openai(messages, temperature, max_tokens, timeout)
+
+    async def _chat_openai(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+        timeout: float,
     ) -> str:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
@@ -61,6 +90,43 @@ class LLMClient:
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
+
+    async def _chat_anthropic(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+        timeout: float,
+    ) -> str:
+        system = "\n\n".join(
+            str(m.get("content") or "") for m in messages if m.get("role") == "system"
+        )
+        msgs = [
+            {"role": m["role"], "content": m["content"]}
+            for m in messages
+            if m.get("role") in ("user", "assistant")
+        ]
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{self.base_url}/messages",
+                headers={
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "max_tokens": max_tokens,
+                    "system": system,
+                    "messages": msgs,
+                    "temperature": temperature,
+                },
+            )
+            resp.raise_for_status()
+            content = resp.json().get("content") or []
+            return "".join(
+                str(block.get("text") or "") for block in content if block.get("type") == "text"
+            ).strip()
 
     @staticmethod
     def _extract_json(raw: str) -> str:
