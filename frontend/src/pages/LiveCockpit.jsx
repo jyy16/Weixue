@@ -27,6 +27,7 @@ export default function LiveCockpit() {
   const [noteDrafts, setNoteDrafts] = useState({});
   const [askDrafts, setAskDrafts] = useState({});
   const [expanded, setExpanded] = useState({});
+  const [focusId, setFocusId] = useState(null);
 
   useEffect(() => {
     if (course?.id) store.subscribeLiveStatus(course.id);
@@ -252,12 +253,51 @@ export default function LiveCockpit() {
     );
   };
 
+  const renderDialogue = (resp) => {
+    const turns = liveDialogue[resp.id] || [];
+    const roleLabel = { student: '学生', ai_suggestion: 'AI 追问', teacher: '教师追问' };
+    if (turns.length === 0) {
+      const text = (resp.raw_text || resp.cleaned_text || '').trim();
+      if (text) {
+        return <div className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{text}</div>;
+      }
+      return <div className="text-xs text-slate-400">暂无对话记录。</div>;
+    }
+    return (
+      <div className="space-y-2.5">
+        {turns.map((t, i) => (
+          <div
+            key={i}
+            className={`rounded-lg p-2.5 border ${
+              t.role === 'student'
+                ? 'bg-blue-50 border-blue-100'
+                : t.role === 'teacher'
+                  ? 'bg-indigo-50 border-indigo-100'
+                  : 'bg-slate-50 border-slate-100'
+            }`}
+          >
+            <div className="text-[10px] font-semibold text-slate-400 mb-1">
+              {roleLabel[t.role] || t.role}{t.turn_type === 'echo_risk' ? '（疑似复述）' : ''}
+            </div>
+            <div className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{t.content}</div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const renderCard = (student) => {
     const resp = respFor(student.id);
     const status = statusOf(student.id);
     const meta = STATUS_META[status] || STATUS_META.not_started;
-    const isHistory = !!resp && !liveStatus[resp.id];
     const signals = studentSignals(student);
+    const phase = resp ? liveTurnPhase[resp.id] : null;
+    const phaseMeta = {
+      awaiting_teacher: { label: '待老师发回', cls: 'bg-amber-100 text-amber-700' },
+      awaiting_student: { label: '等学生发言', cls: 'bg-blue-100 text-blue-600' },
+      ai_processing: { label: 'AI 处理中', cls: 'bg-slate-100 text-slate-500' },
+      done: { label: '对话已结束', cls: 'bg-slate-100 text-slate-500' },
+    }[phase];
     const accent = {
       recording: 'border-t-red-400', submitted: 'border-t-blue-400',
       processing: 'border-t-amber-400', processed: 'border-t-green-500',
@@ -268,118 +308,39 @@ export default function LiveCockpit() {
       processing: 'bg-amber-100 text-amber-600', processed: 'bg-green-100 text-green-700',
       not_started: 'bg-slate-100 text-slate-400',
     }[status] || 'bg-slate-100 text-slate-400';
-    // 及格与否：按该生年级合格线判断（1-3年级 ≥2.5，4-6年级及以上 ≥3.0）
-    const scoreVals = Object.values(resp?.teacher_dimension_scores || resp?.ai_dimension_scores || {})
-      .map(ratingToNumber).filter(v => v !== null);
-    const avgScore = scoreVals.length ? scoreVals.reduce((a, b) => a + b, 0) / scoreVals.length : 0;
-    const passing = avgScore > 0 && avgScore >= passLineForGrade(student.grade);
-    const phase = resp ? liveTurnPhase[resp.id] : null;
-    const phaseMeta = {
-      awaiting_teacher: { label: '待老师发回', cls: 'bg-amber-100 text-amber-700' },
-      awaiting_student: { label: '等学生发言', cls: 'bg-blue-100 text-blue-600' },
-      ai_processing: { label: 'AI 处理中', cls: 'bg-slate-100 text-slate-500' },
-    }[phase];
+    const focused = focusedStudent?.id === student.id;
+    const needsAttention = signals.length > 0;
     return (
-      <div key={student.id} className={`rounded-2xl border-t-4 border border-slate-200 bg-white p-4 shadow-sm ${accent}`}>
+      <div
+        key={student.id}
+        onClick={() => setFocusId(student.id)}
+        className={`rounded-2xl border-t-4 border p-3.5 shadow-sm cursor-pointer transition hover:border-indigo-300 ${accent} ${focused ? 'ring-2 ring-indigo-300' : ''} ${needsAttention ? 'border-red-300 bg-red-50/40' : 'border-slate-200 bg-white'}`}
+      >
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${avatarCls}`}>
+            <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${avatarCls}`}>
               {student.name.slice(0, 1)}
             </span>
             <div>
-              <div className="font-semibold text-slate-800">{student.name}</div>
-              <div className="text-[10px] text-slate-400 flex items-center gap-1">
-                <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
-                {student.grade}年级
-              </div>
+              <div className="font-semibold text-slate-800 text-sm">{student.name}</div>
+              <div className="text-[10px] text-slate-400">{student.grade}年级</div>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className={`text-[10px] font-medium rounded-full px-2 py-0.5 ${phaseMeta ? phaseMeta.cls : meta.cls}`}>
-              {phaseMeta ? phaseMeta.label : meta.label}
-            </span>
-            {status === 'processed' && resp && (
-              <span className={`text-[10px] font-medium rounded-full px-2 py-0.5 ${
-                passing ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
-              }`}>
-                {passing ? '达标' : '未及格'}
-              </span>
-            )}
-          </div>
-        </div>
-
-        <div className="mt-2 flex items-center justify-between text-[10px] text-slate-400">
-          <span>
-            {liveStatus[resp?.id]
-              ? `${studentTurnCount(resp.id) || 1} 轮`
-              : status === 'processed'
-                ? '已完成'
-                : resp
-                  ? '已有作答'
-                  : '等待学生发言'}
+          <span className={`text-[10px] font-medium rounded-full px-2 py-0.5 shrink-0 ${phaseMeta ? phaseMeta.cls : meta.cls}`}>
+            {phaseMeta ? phaseMeta.label : meta.label}
           </span>
-          <button
-            onClick={() => openStudent(student.id)}
-            className="text-indigo-500 border border-indigo-200 rounded-md px-2 py-0.5 hover:bg-indigo-50"
-          >
-            打开学生窗口
-          </button>
         </div>
-
+        <div className="mt-2 flex items-center justify-between">
+          <span className="text-[10px] text-slate-400">
+            {status === 'not_started' ? '等待发言' : `${studentTurnCount(resp?.id) || 1} 轮`}
+          </span>
+          {needsAttention && <span className="text-[10px] font-bold text-red-600 animate-pulse">需处理</span>}
+        </div>
         {signals.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1">
-            {signals.map(s => (
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {signals.slice(0, 3).map(s => (
               <span key={s.key} className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${s.cls}`}>{s.label}</span>
             ))}
-          </div>
-        )}
-
-        {resp && (liveFinished[resp.id] || resp.dialogue_finished) === 'student' && status !== 'processed' && (
-          <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 p-2 text-[11px] text-amber-700">
-            ✅ 学生已结束对话，请评估
-          </div>
-        )}
-        {resp && (liveFinished[resp.id] || resp.dialogue_finished) === 'teacher' && status !== 'processed' && (
-          <div className="mt-2 rounded-lg bg-slate-50 border border-slate-200 p-2 text-[11px] text-slate-500">
-            ⏹ 已结束对话，待评估
-          </div>
-        )}
-
-        {resp && liveTranscripts[resp.id] && status !== 'processed' && (
-          <div className="mt-2 rounded-lg bg-red-50 border border-red-100 p-2">
-            <div className="text-[10px] text-red-400 mb-0.5">
-              {status === 'recording' ? '正在说：' : '已说：'}
-            </div>
-            <div className="text-[11px] text-red-700 leading-relaxed line-clamp-3">{liveTranscripts[resp.id]}</div>
-          </div>
-        )}
-        {resp && liveAiQuestions[resp.id] && !(liveFinished[resp.id] || resp.dialogue_finished) && (
-          <div className="mt-2 rounded-lg bg-indigo-50 border border-indigo-100 p-2">
-            <div className="text-[10px] text-indigo-400 mb-0.5">🤖 AI 已追问：</div>
-            <div className="text-[11px] text-indigo-700 leading-relaxed">{liveAiQuestions[resp.id]}</div>
-          </div>
-        )}
-
-        {resp && status === 'submitted' && renderTeacherAsk(resp)}
-        {resp && (status === 'processed') && renderResult(resp, student)}
-        {resp && status === 'processing' && (
-          <div className="mt-3 text-center text-xs text-amber-500">⏳ AI 评估处理中…</div>
-        )}
-        {isHistory && status !== 'processed' && (
-          <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-2.5">
-            <button
-              onClick={() => setExpanded(prev => ({ ...prev, [`h${resp.id}`]: !prev[`h${resp.id}`] }))}
-              className="text-[10px] text-slate-400 underline"
-            >
-              {resp.teacher_reviewed ? '历史已处理' : '历史作答'} · 查看历史评估
-            </button>
-            {expanded[`h${resp.id}`] && (
-              <div className="mt-1.5 text-[10px] text-slate-500 space-y-0.5">
-                {Object.entries(resp.teacher_dimension_scores || resp.ai_dimension_scores || {}).map(([dim, r]) => (
-                  <div key={dim}>{dim} · {r}</div>
-                ))}
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -400,13 +361,9 @@ export default function LiveCockpit() {
   }).length;
   const pendingCount = students.filter(s => studentSignals(s).some(x => x.key === 'pending')).length;
   const sortedStudents = [...students].sort((a, b) => studentPriority(a) - studentPriority(b));
+  const focusedStudent = students.find(s => s.id === focusId) || sortedStudents[0] || null;
+  const focusedResp = focusedStudent ? respFor(focusedStudent.id) : null;
   const topicIdx = topics.findIndex(t => t.id === topic?.id);
-  const pendingList = Object.entries(livePendingSuggestions || {}).flatMap(([rid, sug]) =>
-    (sug?.questions || []).map(q => {
-      const st = students.find(s => respFor(s.id)?.id === Number(rid));
-      return { rid: Number(rid), studentName: st?.name || `#${rid}`, q };
-    }),
-  );
   // 处理队列：需要老师出手的学生（待确认/待评估/复述风险/3轮已满/处理中），
   // 按优先级排序；教师点「已处理」移出，状态再次变化时自动重新入队。
   const queueItems = sortedStudents
@@ -494,6 +451,118 @@ export default function LiveCockpit() {
           </div>
         </div>
 
+        {focusedStudent && (
+          <div className="rounded-2xl border-2 border-indigo-200 bg-white p-5 shadow-sm">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3">
+                <span className="w-11 h-11 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-lg font-bold shrink-0">
+                  {focusedStudent.name.slice(0, 1)}
+                </span>
+                <div>
+                  <div className="text-lg font-bold text-slate-800">
+                    {focusedStudent.name}
+                    <span className="ml-1 text-xs font-normal text-slate-400">{focusedStudent.grade}年级</span>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    {statusOf(focusedStudent.id) === 'not_started'
+                      ? '尚未发言'
+                      : `${studentTurnCount(focusedResp?.id) || 1} 轮 · ${
+                          {
+                            awaiting_teacher: '待老师发回',
+                            awaiting_student: '等学生发言',
+                            ai_processing: 'AI 处理中',
+                            done: '对话已结束',
+                          }[focusedResp ? liveTurnPhase[focusedResp.id] : null] ||
+                          STATUS_META[statusOf(focusedStudent.id)]?.label ||
+                          ''
+                        }`}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {studentSignals(focusedStudent).map(s => (
+                  <span key={s.key} className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${s.cls}`}>{s.label}</span>
+                ))}
+                <button
+                  onClick={() => openStudent(focusedStudent.id)}
+                  className="text-[10px] text-slate-400 underline cursor-pointer"
+                >
+                  调试：学生窗口
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div>
+                <div className="text-xs font-semibold text-slate-500 mb-2">作答与对话上下文</div>
+                <div className="max-h-[420px] overflow-y-auto pr-1">
+                  {!focusedResp ? (
+                    <div className="text-sm text-slate-400 py-10 text-center">该学生尚未发言</div>
+                  ) : (
+                    <>
+                      {liveTranscripts[focusedResp.id] && statusOf(focusedStudent.id) !== 'processed' && (
+                        <div className="mb-2 rounded-lg bg-red-50 border border-red-100 p-2">
+                          <div className="text-[10px] text-red-400 mb-0.5">正在说 / 已说：</div>
+                          <div className="text-xs text-red-700 leading-relaxed whitespace-pre-wrap">{liveTranscripts[focusedResp.id]}</div>
+                        </div>
+                      )}
+                      {renderDialogue(focusedResp)}
+                    </>
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-slate-500 mb-2">操作与评估</div>
+                {focusedResp && (
+                  <>
+                    {liveMode === 'confirm' && (livePendingSuggestions[focusedResp.id]?.questions?.length > 0) && (
+                      <div className="mb-2 space-y-2">
+                        {(livePendingSuggestions[focusedResp.id].questions || []).map((q, idx) => (
+                          <div key={`${focusedResp.id}-${idx}`} className="rounded-lg border border-indigo-200 bg-indigo-50 p-2">
+                            <div className="text-[10px] text-indigo-400 mb-0.5">待发送追问</div>
+                            <div className="text-xs text-slate-700 leading-relaxed">{q}</div>
+                            <div className="flex gap-1.5 mt-1.5">
+                              <button
+                                onClick={() => store.sendAiSuggestion(focusedResp.id, q)}
+                                className="flex-1 text-[10px] font-medium bg-indigo-600 text-white rounded-md py-1 cursor-pointer"
+                              >
+                                发送
+                              </button>
+                              <button
+                                onClick={() => store.ignoreSuggestion(focusedResp.id)}
+                                className="flex-1 text-[10px] text-slate-500 border border-slate-200 rounded-md py-1 cursor-pointer"
+                              >
+                                忽略
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {liveAiQuestions[focusedResp.id] && !(liveFinished[focusedResp.id] || focusedResp.dialogue_finished) && (
+                      <div className="mb-2 rounded-lg bg-indigo-50 border border-indigo-100 p-2">
+                        <div className="text-[10px] text-indigo-400 mb-0.5">🤖 AI 已追问</div>
+                        <div className="text-xs text-indigo-700 leading-relaxed">{liveAiQuestions[focusedResp.id]}</div>
+                      </div>
+                    )}
+                    {statusOf(focusedStudent.id) === 'submitted' && renderTeacherAsk(focusedResp)}
+                    {statusOf(focusedStudent.id) === 'processing' && (
+                      <div className="py-6 text-center text-sm text-amber-500">⏳ AI 评估处理中…</div>
+                    )}
+                    {statusOf(focusedStudent.id) === 'processed' && renderResult(focusedResp, focusedStudent)}
+                    {(liveFinished[focusedResp.id] || focusedResp.dialogue_finished) && statusOf(focusedStudent.id) !== 'processed' && (
+                      <div className="py-4 text-center text-sm text-slate-500">对话已结束，待评估</div>
+                    )}
+                    {!liveStatus[focusedResp.id] && statusOf(focusedStudent.id) !== 'processed' && (
+                      <div className="mt-2 text-[10px] text-slate-400">（历史作答：仅展示，可直接评估）</div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {sortedStudents.map(renderCard)}
         </div>
@@ -516,7 +585,6 @@ export default function LiveCockpit() {
           ) : (
             <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
               {queueItems.map(({ student, resp, signals }) => {
-                const pendingQ = resp ? (livePendingSuggestions[resp.id]?.questions?.[0] || '') : '';
                 return (
                   <div key={student.id} className="rounded-lg border border-red-100 bg-red-50/40 p-2">
                     <div className="flex items-center justify-between gap-2">
@@ -524,19 +592,11 @@ export default function LiveCockpit() {
                         {student.name} <span className="text-slate-400">{student.grade}年级</span>
                       </span>
                       <div className="flex gap-1 shrink-0">
-                        {pendingQ && (
-                          <button
-                            onClick={() => resp && store.sendAiSuggestion(resp.id, pendingQ)}
-                            className="text-[10px] px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-700 bg-white cursor-pointer hover:bg-emerald-50"
-                          >
-                            发送
-                          </button>
-                        )}
                         <button
-                          onClick={() => openStudent(student.id)}
+                          onClick={() => setFocusId(student.id)}
                           className="text-[10px] px-1.5 py-0.5 rounded border border-indigo-200 text-indigo-600 bg-white cursor-pointer hover:bg-indigo-50"
                         >
-                          窗口
+                          聚焦
                         </button>
                       </div>
                     </div>
@@ -579,94 +639,6 @@ export default function LiveCockpit() {
           </button>
         </div>
 
-        {liveMode === 'confirm' && (
-          <div>
-            <div className="text-[11px] text-slate-400 mb-1.5">待发送追问</div>
-            {pendingList.length === 0 ? (
-              <div className="text-[11px] text-slate-300">暂无待发送的追问</div>
-            ) : (
-              <div className="space-y-2">
-                {pendingList.map(({ rid, studentName, q }) => (
-                  <div key={`${rid}-${q}`} className="rounded-lg border border-indigo-100 bg-indigo-50/50 p-2">
-                    <div className="text-[10px] text-indigo-400">{studentName}</div>
-                    <div className="text-[11px] text-slate-700 mt-0.5 leading-relaxed">{q}</div>
-                    <div className="flex gap-1.5 mt-1.5">
-                      <button
-                        onClick={() => store.sendAiSuggestion(rid, q)}
-                        className="flex-1 text-[10px] font-medium bg-indigo-600 text-white rounded-md py-1 cursor-pointer"
-                      >
-                        发送
-                      </button>
-                      <button
-                        onClick={() => store.ignoreSuggestion(rid)}
-                        className="flex-1 text-[10px] text-slate-500 border border-slate-200 rounded-md py-1 cursor-pointer"
-                      >
-                        忽略
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        <div>
-          <div className="text-[11px] text-slate-400 mb-1.5">追问时间线</div>
-          {sortedStudents.filter(s => respFor(s.id)).length === 0 ? (
-            <div className="text-[11px] text-slate-300">还没有对话</div>
-          ) : (
-            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-              {sortedStudents.filter(s => respFor(s.id)).map(s => {
-                const r = respFor(s.id);
-                const turns = liveDialogue[r.id] || [];
-                const recent = turns.slice(-3);
-                return (
-                  <div key={s.id} className="rounded-lg bg-slate-50 border border-slate-100 p-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-medium text-slate-500">{s.name}</span>
-                      <button onClick={() => openStudent(s.id)} className="text-[10px] text-indigo-500 cursor-pointer">打开窗口</button>
-                    </div>
-                    {recent.length === 0 ? (
-                      <div className="text-[10px] text-slate-300 mt-1">暂无对话</div>
-                    ) : (
-                      <div className="mt-1 space-y-1">
-                        {recent.map((t, i) => (
-                          <div key={i} className="text-[10px] text-slate-600 leading-relaxed">
-                            <b className="text-slate-400">{t.role === 'student' ? '生' : t.role === 'teacher' ? '师' : 'AI'}：</b>
-                            {t.content}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {pendingCount > 0 && (
-          <div>
-            <div className="text-[11px] text-slate-400 mb-1.5">待评估</div>
-            <div className="space-y-1">
-              {sortedStudents.filter(s => studentSignals(s).some(x => x.key === 'pending')).map(s => {
-                const r = respFor(s.id);
-                return (
-                  <div key={s.id} className="flex items-center justify-between text-[11px]">
-                    <span className="text-red-600">{s.name}</span>
-                    <button
-                      onClick={() => r && handleAssess(r)}
-                      className="text-[10px] text-red-600 border border-red-200 rounded-md px-2 py-0.5 cursor-pointer"
-                    >
-                      评估
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
       </aside>
     </div>
   );

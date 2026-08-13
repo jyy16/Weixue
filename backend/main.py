@@ -3,6 +3,7 @@
 import hashlib
 import os
 import re
+import json
 from datetime import datetime
 from typing import Optional
 import uuid
@@ -13,6 +14,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import threading
+import settings_store
 
 from database import (
     get_db, init_db, SessionLocal,
@@ -34,6 +36,7 @@ from schemas import (
     CompanionTurnCreate, CompanionTurnOut, StatusUpdate, SuggestTurnOut,
     ASRProviderInfo, ASRSettingOut, ASRSettingUpdate,
     SystemModeOut, SystemModeAction,
+    SettingsItem, SettingsOut, SettingsUpdate,
 )
 from grading.evaluator import AssessmentEngine, COMMENT_TONE_GUIDE
 from grading.llm import LLMClient
@@ -41,12 +44,14 @@ from grading.rubric_loader import RubricLoader
 from companion import CompanionEngine
 from feishu.routes import close_client as close_feishu_router_client
 from feishu.routes import router as feishu_router
+from feishu.routes import reload_config as reload_feishu_config
 from asr import ASRClient, ASRError
 from grading.ratings import rating_to_value, pass_line_for_grade, is_passing
 from feishu import FeishuClient
 from feishu.bot import BotService
 from feishu.reviews import apply_teacher_review, sync_tags_to_library
-from feishu.sync import BitableSyncer, bitable_status
+from feishu.sync import BitableSyncer, bitable_status, bitable_is_configured
+from feishu.bitable import BitableService
 
 app = FastAPI(title="思辨星 · 少儿思辨能力认知自适应评估系统", version="0.1.0")
 
@@ -94,6 +99,20 @@ llm = LLMClient()
 evaluator = AssessmentEngine(llm)
 companion = CompanionEngine(llm)
 feishu_client = FeishuClient.from_env()
+
+
+def reload_runtime_settings(db: Session) -> dict:
+    """Push DB-backed settings into os.environ and rebuild runtime singletons."""
+    global llm, evaluator, companion, feishu_client
+    settings = settings_store.get_all(db)
+    settings_store.push_to_env(settings)
+    llm = LLMClient()
+    evaluator = AssessmentEngine(llm)
+    companion = CompanionEngine(llm)
+    feishu_client = FeishuClient.from_env()
+    reload_feishu_config()
+    return settings
+
 
 app.include_router(feishu_router)
 
@@ -304,6 +323,11 @@ _progress_lock = threading.Lock()
 @app.on_event("startup")
 def on_startup():
     init_db()
+    db = SessionLocal()
+    try:
+        reload_runtime_settings(db)
+    finally:
+        db.close()
 
 
 @app.on_event("shutdown")
@@ -417,6 +441,134 @@ def set_system_mode(body: SystemModeAction, db: Session = Depends(get_db)):
 
 
 # ════════════════════════════════════════════════════════════
+# In-app settings (LLM / ASR / Feishu / Bitable)
+# ════════════════════════════════════════════════════════════
+
+def _bitable_ids_configured(values: dict) -> bool:
+    raw = values.get("feishu_bitable_table_ids") or ""
+    if not raw:
+        return False
+    try:
+        ids = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+    return bool(isinstance(ids, dict) and ids.get("responses"))
+
+
+def _build_settings_out(db: Session) -> SettingsOut:
+    values = settings_store.get_all(db)
+    items: dict[str, SettingsItem] = {}
+    for key, value in values.items():
+        secret = key in settings_store.SECRET_KEYS
+        items[key] = SettingsItem(
+            value=(settings_store.mask(value) if secret else value),
+            has_value=bool(value),
+            secret=secret,
+        )
+    asr_provider = values.get("asr_provider") or "mock"
+    asr_configured = asr_provider == "mock" or bool(
+        values.get("asr_api_key") or values.get("llm_api_key")
+    )
+    return SettingsOut(
+        items=items,
+        llm_configured=bool(values.get("llm_api_key")),
+        asr_configured=asr_configured,
+        feishu_configured=bool(values.get("feishu_app_id") and values.get("feishu_app_secret")),
+        bitable_configured=bool(values.get("feishu_bitable_app_token")) and _bitable_ids_configured(values),
+    )
+
+
+@app.get("/api/settings", response_model=SettingsOut)
+def get_settings(db: Session = Depends(get_db)):
+    """Return the current in-app settings (secrets masked, no raw values)."""
+    return _build_settings_out(db)
+
+
+@app.put("/api/settings", response_model=SettingsOut)
+def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
+    """Persist settings and hot-reload the runtime (LLM / ASR / Feishu)."""
+    settings_store.update(db, body.settings)
+    reload_runtime_settings(db)
+    return _build_settings_out(db)
+
+
+async def _test_llm(db: Session) -> dict:
+    values = settings_store.get_all(db)
+    if not values.get("llm_api_key"):
+        return {"ok": False, "detail": "未配置 LLM API Key"}
+    client = LLMClient(
+        provider=values.get("llm_provider") or None,
+        api_key=values.get("llm_api_key"),
+        model=values.get("llm_model") or None,
+        base_url=values.get("llm_base_url") or None,
+    )
+    if not client.model:
+        return {"ok": False, "detail": "未配置 LLM 模型"}
+    try:
+        out = await client.chat(
+            [{"role": "user", "content": "请只回复两个字：正常"}],
+            temperature=0,
+            max_tokens=16,
+            timeout=30,
+        )
+        return {"ok": True, "detail": f"连接成功，模型返回：{out[:80]}"}
+    except Exception as exc:  # noqa: BLE001 - surfaced as a user-friendly detail
+        return {"ok": False, "detail": f"连接失败：{exc}"}
+
+
+def _test_asr(db: Session) -> dict:
+    values = settings_store.get_all(db)
+    provider = values.get("asr_provider") or "mock"
+    if provider == "mock":
+        return {"ok": True, "detail": "演示转写（mock）无需配置"}
+    key = values.get("asr_api_key") or values.get("llm_api_key")
+    model = values.get("asr_model")
+    if not key:
+        return {"ok": False, "detail": "未配置 ASR API Key（且未复用 LLM Key）"}
+    if not model:
+        return {"ok": False, "detail": "未配置 ASR 模型"}
+    if provider == "dashscope":
+        import importlib.util
+        if importlib.util.find_spec("dashscope") is None:
+            return {"ok": False, "detail": "未安装 dashscope SDK（pip install dashscope）"}
+    return {"ok": True, "detail": f"{provider} 配置已就绪（未做真实音频转写测试）"}
+
+
+async def _test_feishu_bot() -> dict:
+    status = await feishu_client.health_check()
+    if status.get("status") == "auth_ok":
+        return {"ok": True, "detail": "飞书鉴权成功（tenant_access_token 可获取）"}
+    return {"ok": False, "detail": status.get("message") or "飞书未配置或鉴权失败"}
+
+
+async def _test_bitable() -> dict:
+    if not bitable_is_configured(feishu_client.config):
+        return {"ok": False, "detail": "未配置多维表格（App Token / 表格 ID）"}
+    try:
+        service = BitableService(feishu_client)
+        tables = await service.list_tables()
+        items = (tables or {}).get("items") or []
+        return {"ok": True, "detail": f"多维表格可访问，共 {len(items)} 张表"}
+    except Exception as exc:  # noqa: BLE001 - surfaced as a user-friendly detail
+        return {"ok": False, "detail": f"多维表格访问失败：{exc}"}
+
+
+@app.post("/api/settings/test/{section}")
+async def test_settings_section(section: str, db: Session = Depends(get_db)):
+    """Test one settings section against its live provider (no secrets returned)."""
+    key = section.strip().lower()
+    if key == "llm":
+        return await _test_llm(db)
+    if key == "asr":
+        return _test_asr(db)
+    if key in ("feishu", "feishu_bot", "bot"):
+        return await _test_feishu_bot()
+    if key in ("feishu_bitable", "bitable"):
+        return await _test_bitable()
+    raise HTTPException(400, f"unknown settings section: {section}")
+
+
+# ════════════════════════════════════════════════════════════
 # Courses
 # ════════════════════════════════════════════════════════════
 
@@ -520,6 +672,7 @@ def _student_out(student: Student) -> StudentOut:
         course_id=student.course_id,
         cognitive_tier=student.cognitive_tier,
         comment_draft=student.comment_draft or "",
+        phone=student.phone or "",
         feishu_open_id=student.feishu_open_id or "",
         comment_delivery_status=student.comment_delivery_status or "not_sent",
         comment_delivery_error=student.comment_delivery_error or "",
@@ -551,6 +704,7 @@ def create_student(cid: int, body: StudentCreate, db: Session = Depends(get_db))
         course_id=cid,
         name=body.name,
         grade=body.grade,
+        phone=(body.phone or "").strip(),
         feishu_open_id=feishu_open_id,
     )
     db.add(s)
@@ -587,6 +741,7 @@ def create_students_batch(cid: int, body: StudentBatchCreate, db: Session = Depe
             course_id=cid,
             name=name,
             grade=item.grade,
+            phone=(item.phone or "").strip(),
             feishu_open_id=feishu_open_id,
         )
         db.add(st)
@@ -612,6 +767,8 @@ def update_student(sid: int, body: StudentUpdate, db: Session = Depends(get_db))
         if feishu_open_id != (s.feishu_open_id or ""):
             s.feishu_open_id = feishu_open_id
             _reset_comment_delivery(s)
+    if body.phone is not None:
+        s.phone = body.phone.strip()
     db.commit()
     db.refresh(s)
     return _student_out(s)
@@ -1474,7 +1631,9 @@ async def generate_comment(cid: int, body: CommentRequest, db: Session = Depends
             max_tokens=600,
         )
         draft = draft.strip()
-    except Exception as e:
+        if not draft:
+            draft = _fallback_comment(student, topic_data, dim_labels)
+    except Exception:
         # Fallback to template if LLM fails
         draft = _fallback_comment(student, topic_data, dim_labels)
 
@@ -1725,9 +1884,10 @@ async def batch_generate_comments(cid: int, db: Session = Depends(get_db)):
                 max_tokens=600,
             )
             draft = draft.strip()
-            # Batch regeneration has the same semantics as regenerating one
-            # student: every successful result starts a new delivery cycle,
-            # even if the model happens to return identical text.
+            if not draft:
+                raise ValueError("LLM 返回空内容")
+            # Batch regeneration always starts a new delivery cycle, even if
+            # the model happens to return identical text.
             student.comment_draft = draft
             _reset_comment_delivery(student)
             db.commit()
@@ -2938,13 +3098,12 @@ def student_report(sid: int, db: Session = Depends(get_db)):
     if not student:
         raise HTTPException(404, "Student not found")
 
-    response = (
+    responses = (
         db.query(StudentResponse)
         .filter(StudentResponse.student_id == sid)
-        .order_by(StudentResponse.id.desc())
-        .first()
+        .all()
     )
-    if not response:
+    if not responses:
         return {
             "student_id": sid,
             "name": student.name,
@@ -2952,9 +3111,10 @@ def student_report(sid: int, db: Session = Depends(get_db)):
             "has_report": False,
             "dimensions": {},
             "teacher_comment": "",
+            "best_answer": None,
             "rating": "",
-            "next_steps": [],
         }
+    response = max(responses, key=lambda r: r.id)
 
     scores = response.teacher_dimension_scores or response.ai_dimension_scores or {}
     dim_labels = {
@@ -2980,6 +3140,26 @@ def student_report(sid: int, db: Session = Depends(get_db)):
     pass_line = pass_line_for_grade(student.grade)
 
     band = _upgrade_band(_band_for_avg(avg_score, pass_line), response.ai_bonus_flags or [])
+
+    best_answer = None
+    best_score = -1.0
+    for r in responses:
+        text = (r.cleaned_text or r.raw_text or "").strip()
+        if not text:
+            continue
+        r_scores = r.teacher_dimension_scores or r.ai_dimension_scores or {}
+        vals = [rating_to_value(v) for v in r_scores.values() if rating_to_value(v) is not None]
+        if not vals:
+            continue
+        avg = sum(vals) / len(vals)
+        if avg > best_score:
+            best_score = avg
+            best_answer = {
+                "topic_title": r.topic.title if r.topic else "",
+                "text": text,
+                "score": round(avg, 2),
+            }
+
     return {
         "student_id": sid,
         "name": student.name,
@@ -2990,16 +3170,12 @@ def student_report(sid: int, db: Session = Depends(get_db)):
         "has_report": True,
         "topic_title": response.topic.title if response.topic else "",
         "dimensions": dimensions,
-        "teacher_comment": response.teacher_note or "",
+        "teacher_comment": student.comment_draft or "",
+        "best_answer": best_answer,
         "rating": band,
         "quick_rating": response.teacher_rating or "",
         "bonus_flags": response.ai_bonus_flags or [],
         "reviewed": response.teacher_reviewed,
-        "next_steps": [
-            "下节课重点关注"
-            + (_QUICK_RATING_LABELS.get(response.teacher_rating or "", "本次表达"))
-            + "对应的引导方向"
-        ],
     }
 
 

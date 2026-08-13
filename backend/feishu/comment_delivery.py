@@ -15,7 +15,7 @@ from .client import FeishuClient, FeishuConfig
 def _read_delivery_snapshot(
     student_id: int,
     expected_hash: str,
-) -> Optional[tuple[str, str, str]]:
+) -> Optional[tuple[str, str, str, str]]:
     """Read the reserved delivery data in a short-lived synchronous session."""
     db = SessionLocal()
     try:
@@ -31,6 +31,7 @@ def _read_delivery_snapshot(
             (student.feishu_open_id or "").strip(),
             (student.comment_draft or "").strip(),
             student.name,
+            (student.phone or "").strip(),
         )
     finally:
         db.close()
@@ -61,6 +62,32 @@ def _persist_delivery_result_once(
                 },
                 synchronize_session=False,
             )
+        )
+        db.commit()
+        return bool(updated)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _persist_resolved_open_id_once(
+    student_id: int,
+    expected_hash: str,
+    open_id: str,
+) -> bool:
+    """Persist a phone-resolved open_id without overwriting a newer attempt."""
+    db = SessionLocal()
+    try:
+        updated = (
+            db.query(Student)
+            .filter(
+                Student.id == student_id,
+                Student.comment_delivery_status == "sending",
+                Student.comment_delivery_hash == expected_hash,
+            )
+            .update({Student.feishu_open_id: open_id}, synchronize_session=False)
         )
         db.commit()
         return bool(updated)
@@ -129,7 +156,46 @@ async def deliver_student_comment(
         )
         if snapshot is None:
             return
-        open_id, comment, name = snapshot
+        open_id, comment, name, phone = snapshot
+
+        if not open_id and phone:
+            try:
+                mobile = phone
+                if mobile.isdigit() and len(mobile) == 11 and mobile.startswith("1"):
+                    mobile = "+86" + mobile
+                result = await client.request(
+                    "POST",
+                    "/contact/v3/users/batch_get_id",
+                    params={"user_id_type": "open_id"},
+                    json_body={"mobiles": [mobile]},
+                )
+                user_list = (result or {}).get("user_list") or []
+                open_id = next(
+                    (
+                        str(item.get("user_id") or "")
+                        for item in user_list
+                        if item.get("user_id")
+                    ),
+                    "",
+                )
+                if open_id:
+                    try:
+                        await asyncio.to_thread(
+                            _persist_resolved_open_id_once,
+                            student_id,
+                            expected_hash,
+                            open_id,
+                        )
+                    except Exception:
+                        pass  # best effort: delivery proceeds with the resolved id
+            except Exception as exc:  # noqa: BLE001 - surfaced as delivery error
+                await _persist_delivery_result(
+                    student_id,
+                    expected_hash,
+                    status="failed",
+                    error=f"根据手机号解析飞书账号失败：{exc}",
+                )
+                return
 
         if not open_id or not comment:
             await _persist_delivery_result(

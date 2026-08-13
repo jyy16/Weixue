@@ -249,8 +249,9 @@ export default function CommentsPage() {
     try {
       await settleAutoSave();
       const r = await api.generateComment(courseId, student.id);
+      if (r?.draft) setDraft(r.draft);
       await loadCourse(courseId);
-      setDraft(r.draft);
+      setSaveStatus('');
     } catch (e) {
       console.error(e);
       setSendStatus({ kind: 'error', message: '重新生成失败，请稍后重试。' });
@@ -259,6 +260,8 @@ export default function CommentsPage() {
   };
 
   const batchGenerate = async () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const sid = student?.id;
     setBatchLoading(true);
     setBatchResult(null);
     setSendStatus({ kind: '', message: '' });
@@ -267,9 +270,15 @@ export default function CommentsPage() {
       const r = await api.batchGenerateComments(courseId);
       setBatchResult(r);
       await loadCourse(courseId);
-      // After reload, show current student's draft
-      const updated = useStore.getState().students[currentStudentIdx];
-      if (updated) setDraft(updated.comment_draft || '');
+      // Prefer the batch result for the current student: direct and avoids
+      // showing stale/empty data when loadCourse races or a student is skipped.
+      const mine = (r.results || []).find(x => x.student_id === sid);
+      if (mine && mine.draft) {
+        setDraft(mine.draft);
+      } else {
+        const updated = useStore.getState().students[currentStudentIdx];
+        if (updated) setDraft(updated.comment_draft || '');
+      }
     } catch {
       setBatchResult({ results: [], error: '批量生成失败' });
     }

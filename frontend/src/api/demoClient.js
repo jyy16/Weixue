@@ -10,7 +10,7 @@ import demoData from '../demo-data.json';
 import {
   computePrepAnalytics, computePrepInsights, computeClassReport, DIM_LABELS,
 } from '../utils/analytics';
-import { normalizeScores } from '../utils/ratings';
+import { normalizeScores, averageRating } from '../utils/ratings';
 
 const _clone = (v) => JSON.parse(JSON.stringify(v));
 const _pristine = demoData;
@@ -319,6 +319,29 @@ export const setAsrProvider = (provider) => {
   return _demoAsrSettings();
 };
 
+// ── In-app settings (demo mode: read-only, requires real backend) ──
+export const getSettings = () => ok({
+  items: {},
+  llm_configured: false,
+  asr_configured: false,
+  feishu_configured: false,
+  bitable_configured: false,
+  demo: true,
+});
+export const updateSettings = () => ok({
+  items: {},
+  llm_configured: false,
+  asr_configured: false,
+  feishu_configured: false,
+  bitable_configured: false,
+  demo: true,
+  message: '演示模式无后端，设置只能在连接后端的真实模式中修改。',
+});
+export const testSettings = () => ok({
+  ok: false,
+  detail: '演示模式无后端，无法测试配置。',
+});
+
 // ── AI Companion (demo simulation) ─────────────────────
 export const updateResponseStatus = (rid, status) => {
   const resp = _data.responses.find(r => r.id === rid);
@@ -434,6 +457,19 @@ export const getStudentReport = (sid) => {
   const latest = resps[resps.length - 1] || null;
   const scores = latest ? (latest.teacher_dimension_scores || latest.ai_dimension_scores || {}) : {};
   const topic = latest ? _data.topics.find(t => t.id === latest.topic_id) : null;
+  let bestAnswer = null;
+  let bestScore = -1;
+  resps.forEach((r) => {
+    const text = (r.cleaned_text || r.raw_text || '').trim();
+    if (!text) return;
+    const s = r.teacher_dimension_scores || r.ai_dimension_scores || {};
+    const avg = averageRating(s);
+    if (avg > 0 && avg > bestScore) {
+      bestScore = avg;
+      const t = _data.topics.find((x) => x.id === r.topic_id);
+      bestAnswer = { topic_title: t?.title || '', text, score: avg };
+    }
+  });
   return ok({
     student_id: sid,
     name: st?.name || '',
@@ -441,10 +477,10 @@ export const getStudentReport = (sid) => {
     has_report: !!latest,
     topic_title: topic?.title || '',
     dimensions: scores,
-    teacher_comment: latest?.teacher_note || '',
+    teacher_comment: st?.comment_draft || '',
+    best_answer: bestAnswer,
     rating: latest?.teacher_rating || '',
     reviewed: !!latest?.teacher_reviewed,
-    next_steps: ['下节课重点关注对应引导方向'],
   });
 };
 

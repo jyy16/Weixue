@@ -53,6 +53,13 @@ def get_client() -> FeishuClient:
     return _client
 
 
+def reload_config() -> None:
+    """Rebuild the module-level Feishu config after an in-app settings change."""
+    global _feishu_config, _client
+    _feishu_config = FeishuConfig()
+    _client = None
+
+
 async def close_client() -> None:
     global _client
     if _client is not None:

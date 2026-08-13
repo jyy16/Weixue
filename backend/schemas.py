@@ -61,6 +61,7 @@ class DebateTopicOut(DebateTopicBase):
 class StudentBase(BaseModel):
     name: str
     grade: int
+    phone: str = ""
 
 class StudentCreate(StudentBase):
     feishu_open_id: str = ""
@@ -68,6 +69,7 @@ class StudentCreate(StudentBase):
 class StudentUpdate(BaseModel):
     name: Optional[str] = None
     grade: Optional[int] = None
+    phone: Optional[str] = None
     feishu_open_id: Optional[str] = None
 
 class StudentBatchCreate(BaseModel):
@@ -369,3 +371,23 @@ class SystemModeOut(BaseModel):
 
 class SystemModeAction(BaseModel):
     action: str   # enter_demo | enter_real
+
+
+# ── In-app settings (LLM / ASR / Feishu / Bitable) ──────────
+
+class SettingsItem(BaseModel):
+    value: str = ""
+    has_value: bool = False
+    secret: bool = False
+
+
+class SettingsOut(BaseModel):
+    items: dict[str, SettingsItem] = Field(default_factory=dict)
+    llm_configured: bool = False
+    asr_configured: bool = False
+    feishu_configured: bool = False
+    bitable_configured: bool = False
+
+
+class SettingsUpdate(BaseModel):
+    settings: dict[str, str] = Field(default_factory=dict)

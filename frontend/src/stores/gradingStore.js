@@ -337,13 +337,22 @@ const useStore = create((set, get) => ({
         return;
       }
       if (evt.type === 'student_finished' || evt.type === 'teacher_finished') {
-        set(state => ({
-          liveFinished: {
-            ...state.liveFinished,
-            [evt.responseId]: evt.type === 'teacher_finished' ? 'teacher' : 'student',
-          },
-          liveTurnPhase: { ...state.liveTurnPhase, [evt.responseId]: 'awaiting_teacher' },
-        }));
+        set(state => {
+          const teacherFinished = evt.type === 'teacher_finished';
+          const nextPending = { ...state.livePendingSuggestions };
+          if (teacherFinished) delete nextPending[evt.responseId];
+          return {
+            liveFinished: {
+              ...state.liveFinished,
+              [evt.responseId]: teacherFinished ? 'teacher' : 'student',
+            },
+            liveTurnPhase: {
+              ...state.liveTurnPhase,
+              [evt.responseId]: teacherFinished ? 'done' : 'awaiting_teacher',
+            },
+            livePendingSuggestions: nextPending,
+          };
+        });
         return;
       }
       if (evt.type === 'live_mode') {
@@ -449,7 +458,15 @@ const useStore = create((set, get) => ({
   },
 
   finishLiveDialogue: async (responseId, by = 'teacher') => {
-    set(state => ({ liveFinished: { ...state.liveFinished, [responseId]: by } }));
+    set(state => {
+      const nextPending = { ...state.livePendingSuggestions };
+      delete nextPending[responseId];
+      return {
+        liveFinished: { ...state.liveFinished, [responseId]: by },
+        liveTurnPhase: { ...state.liveTurnPhase, [responseId]: 'done' },
+        livePendingSuggestions: nextPending,
+      };
+    });
     publishStatus(get().courseId, {
       responseId,
       type: by === 'teacher' ? 'teacher_finished' : 'student_finished',

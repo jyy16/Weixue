@@ -6,6 +6,7 @@ import CommentsPage from './pages/CommentsPage';
 import PrepPage from './pages/PrepPage';
 import ReportPage from './pages/ReportPage';
 import LibraryPage from './pages/LibraryPage';
+import SettingsPage from './pages/SettingsPage';
 import LiveCockpit from './pages/LiveCockpit';
 import { getMode, setMode, resolveMode, subscribeModeChange } from './config/mode';
 
@@ -16,6 +17,7 @@ const TABS = [
   { key: 'prep',     label: '备课辅助', icon: '📋' },
   { key: 'report',   label: '学情报告', icon: '📊' },
   { key: 'library',  label: '标签库',   icon: '🏷️' },
+  { key: 'settings', label: '设置',     icon: '⚙️' },
 ];
 
 const TAB_DESC = {
@@ -24,6 +26,7 @@ const TAB_DESC = {
   prep:     '基于您确认的评估数据，AI按维度薄弱项整理讲评建议。',
   report:   '基于教师审核后的最终评分，生成班级思辨能力分析报告。',
   library:  '管理评语标签库。基础标签来自教研经验，AI新增标签由评估过程中的教师选择自动入库。',
+  settings: '配置 LLM / 语音转写 / 飞书机器人 / 多维表格，保存后立即生效。',
 };
 
 const TIER_LABEL = { basic: '低年级', developing: '中年级', advancing: '高年级' };
@@ -234,7 +237,7 @@ export default function App() {
       )}
 
       {currentMode === 'live' ? (
-        <main className="max-w-7xl mx-auto px-6 pt-4 pb-10">
+        <main className="max-w-[1500px] mx-auto px-4 pt-4 pb-10">
           <LiveCockpit />
         </main>
       ) : (
@@ -252,6 +255,7 @@ export default function App() {
             {currentTab === 'prep'     && <PrepPage />}
             {currentTab === 'report'   && <ReportPage />}
             {currentTab === 'library'  && <LibraryPage />}
+            {currentTab === 'settings' && <SettingsPage />}
           </main>
         </>
       )}
