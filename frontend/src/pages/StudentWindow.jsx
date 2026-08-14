@@ -297,7 +297,7 @@ export default function StudentWindow({ studentId }) {
       if (!endedRef.current && newCount < MAX_ROUNDS) {
         await autoAsk(updated.id);
       } else {
-        setSimNote(newCount >= MAX_ROUNDS ? '（已完成 3 轮对话，等待老师确认）' : '（对话已结束，等待老师确认）');
+        setSimNote(newCount >= MAX_ROUNDS ? '（已完成 3 轮对话，等待老师评估）' : '（对话已结束，等待老师评估）');
       }
       return updated.id;
     } catch (e) {
@@ -371,7 +371,7 @@ export default function StudentWindow({ studentId }) {
             publish('submitted', resp, newCount, { transcript: resp.raw_text || '' });
             setEncouragement(newCount === 1 ? '你把想法说出来啦，真棒！' : '你又补充了新想法！');
             if (!endedRef.current && newCount < MAX_ROUNDS) await autoAsk(resp.id);
-            else setSimNote(newCount >= MAX_ROUNDS ? '（已完成 3 轮对话，等待老师确认）' : '（对话已结束，等待老师确认）');
+            else setSimNote(newCount >= MAX_ROUNDS ? '（已完成 3 轮对话，等待老师评估）' : '（对话已结束，等待老师评估）');
           } catch (e) {
             console.error('audio import failed:', e);
             setSimNote('（语音转写失败，请改用粘贴文本）');
@@ -404,7 +404,7 @@ export default function StudentWindow({ studentId }) {
     endedRef.current = true;
     setEnded(true);
     setAiThinking(false);
-    setSimNote('（对话已结束，等待老师确认）');
+    setSimNote('（对话已结束，等待老师评估）');
     publishStatus(courseId, {
       responseId: responseIdRef.current,
       studentId: Number(studentId),
@@ -504,7 +504,7 @@ export default function StudentWindow({ studentId }) {
               ) : (
                 feedback && <div className="text-sm text-green-800 mt-2 leading-relaxed">{feedback}</div>
               )}
-              <div className="text-[11px] text-green-600 mt-2">回答已交给老师，等老师确认后给你更完整的反馈。</div>
+              <div className="text-[11px] text-green-600 mt-2">回答已交给老师，评估完成后会给你更完整的反馈。</div>
             </div>
           ) : (
             <>

@@ -149,6 +149,17 @@ class TeacherReview(BaseModel):
     rating: Optional[str] = None
 
 
+class QuickRatingUpdate(BaseModel):
+    """On-the-spot live rating saved BEFORE the AI assessment push.
+
+    Only records the teacher's instant judgment (teacher_rating / note); it
+    does NOT mark the response as reviewed or create calibration records --
+    the formal five-dimension review still happens later in the grading page.
+    """
+    rating: str = ""        # good / guide / echo（空串清除）
+    note: str = ""
+
+
 # ── AI Companion (live-class dialogue) ───────────────────────
 
 class CompanionTurnCreate(BaseModel):

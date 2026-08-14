@@ -33,6 +33,18 @@ export default function LiveCockpit() {
     if (course?.id) store.subscribeLiveStatus(course.id);
   }, [course?.id]);
 
+  // 无论学生处于哪个阶段（含已处理/历史作答），都从后端加载完整对话轮次，
+  // 避免退化成“只有学生、看不出轮次”的纯文本。
+  useEffect(() => {
+    if (!course?.id) return;
+    const t = topics.find(x => x.id === liveTopicId) || topics[0] || null;
+    if (!t) return;
+    const fId = focusId ?? students[0]?.id ?? null;
+    if (fId == null) return;
+    const resp = (responses[fId] || []).find(r => r.topic_id === t.id);
+    if (resp?.id) store.loadDialogue(resp.id);
+  }, [course?.id, liveTopicId, focusId, students, topics, responses]);
+
   const topic = topics.find(t => t.id === liveTopicId) || topics[0] || null;
 
   const respFor = (studentId) => {
@@ -61,9 +73,6 @@ export default function LiveCockpit() {
     const resp = respFor(student.id);
     const status = statusOf(student.id);
     const signals = [];
-    if (resp && status === 'processed' && !resp.teacher_reviewed) {
-      signals.push({ key: 'toreview', label: '待确认', cls: 'bg-red-100 text-red-700', score: 0 });
-    }
     if (resp && (liveFinished[resp.id] || resp.dialogue_finished) && status !== 'processed') {
       signals.push({ key: 'pending', label: '待评估', cls: 'bg-red-100 text-red-700', score: 0 });
     }
@@ -89,14 +98,12 @@ export default function LiveCockpit() {
   };
 
   const spokenCount = students.filter(s => statusOf(s.id) !== 'not_started').length;
-  const reviewedCount = students.filter(s => {
-    const r = respFor(s.id);
-    return r?.teacher_reviewed;
-  }).length;
-  // 达标 = 已确认且均分 ≥ 该生年级合格线（1-3年级 ≥2.5，4-6年级及以上 ≥3.0）。
+  // 推给 AI 评估后老师侧流程即结束：课堂统计以“已处理”为准。
+  const doneCount = students.filter(s => statusOf(s.id) === 'processed').length;
+  // 达标 = 已处理且均分 ≥ 该生年级合格线（1-3年级 ≥2.5，4-6年级及以上 ≥3.0）。
   const passCount = students.filter(s => {
     const r = respFor(s.id);
-    if (!r || !r.teacher_reviewed) return false;
+    if (!r || statusOf(s.id) !== 'processed') return false;
     const scores = r.teacher_dimension_scores || r.ai_dimension_scores || {};
     const vals = Object.values(scores).map(ratingToNumber).filter(v => v !== null);
     const avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
@@ -111,8 +118,8 @@ export default function LiveCockpit() {
     await store.assessLive(resp.id);
   };
 
-  const handleReview = async (resp, rating) => {
-    await store.reviewLive(resp.id, { rating, note: noteDrafts[resp.id] || '' });
+  const handleQuickRate = async (resp, rating) => {
+    await store.quickRateLive(resp.id, { rating, note: noteDrafts[resp.id] || '' });
   };
 
   const openStudent = (studentId) => store.openStudentWindow(studentId);
@@ -190,64 +197,79 @@ export default function LiveCockpit() {
     const dims = Object.entries(scores).slice(0, 5);
     return (
       <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
-        {isReviewed ? (
-          <>
-            <div className="flex items-center gap-2">
-              {ratingMeta ? (
-                <span className={`text-xs font-bold rounded-full px-2.5 py-1 ${ratingMeta.cls}`}>{ratingMeta.label}</span>
-              ) : (
-                <span className="text-xs font-bold rounded-full px-2.5 py-1 bg-indigo-600 text-white">已确认</span>
-              )}
-            </div>
-            {resp.teacher_note && (
-              <div className="mt-1.5 text-xs text-slate-500 truncate">{resp.teacher_note}</div>
-            )}
-          </>
-        ) : (
-          <>
-            <div className="flex flex-wrap gap-1 mb-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-bold rounded-full px-2.5 py-1 bg-green-600 text-white">已完成</span>
+          {ratingMeta && (
+            <span className={`text-xs font-bold rounded-full px-2.5 py-1 ${ratingMeta.cls}`}>{ratingMeta.label}</span>
+          )}
+          {isReviewed && (
+            <span className="text-xs font-bold rounded-full px-2.5 py-1 bg-indigo-600 text-white">已确认</span>
+          )}
+        </div>
+        {resp.teacher_note && (
+          <div className="mt-1.5 text-xs text-slate-500 truncate">{resp.teacher_note}</div>
+        )}
+        <div className="flex flex-wrap gap-1 mt-2">
+          {dims.map(([dim, r]) => (
+            <span key={dim} className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">
+              {dim} · {r}
+            </span>
+          ))}
+        </div>
+        <div className="mt-1.5">
+          <button
+            onClick={() => setExpanded(prev => ({ ...prev, [resp.id]: !prev[resp.id] }))}
+            className="text-[10px] text-indigo-500 underline"
+          >
+            {expanded[resp.id] ? '收起维度详情' : '展开维度详情'}
+          </button>
+          {expanded[resp.id] && (
+            <div className="mt-1.5 text-[10px] text-slate-500 space-y-1">
               {dims.map(([dim, r]) => (
-                <span key={dim} className="text-[10px] bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">
-                  {dim} · {r}
-                </span>
+                <div key={dim}>{dim}：{r} — {resp.ai_reasoning?.[dim]?.reasoning || '（无推理说明）'}</div>
               ))}
+              {resp.cleaned_text && <div>清洗稿：{resp.cleaned_text.slice(0, 80)}…</div>}
             </div>
-            <div className="flex gap-1.5">
-              {Object.entries(RATING_META).map(([key, meta]) => (
-                <button
-                  key={key}
-                  onClick={() => handleReview(resp, key)}
-                  disabled={liveBusy[resp.id]}
-                  className={`flex-1 text-[11px] font-bold rounded-lg py-2 disabled:opacity-40 ${meta.cls}`}
-                >
-                  {meta.label}
-                </button>
-              ))}
-            </div>
-            <textarea
-              value={noteDrafts[resp.id] || ''}
-              onChange={e => setNoteDrafts(prev => ({ ...prev, [resp.id]: e.target.value }))}
-              rows={1}
-              placeholder="轻批注（可选）"
-              className="mt-2 w-full text-[11px] border border-slate-200 rounded-lg p-1.5 outline-none focus:ring-1 focus:ring-indigo-300"
-            />
-            <div className="mt-1.5">
-              <button
-                onClick={() => setExpanded(prev => ({ ...prev, [resp.id]: !prev[resp.id] }))}
-                className="text-[10px] text-indigo-500 underline"
-              >
-                {expanded[resp.id] ? '收起维度详情' : '展开维度详情'}
-              </button>
-              {expanded[resp.id] && (
-                <div className="mt-1.5 text-[10px] text-slate-500 space-y-1">
-                  {dims.map(([dim, r]) => (
-                    <div key={dim}>{dim}：{r} — {resp.ai_reasoning?.[dim]?.reasoning || '（无推理说明）'}</div>
-                  ))}
-                  {resp.cleaned_text && <div>清洗稿：{resp.cleaned_text.slice(0, 80)}…</div>}
-                </div>
-              )}
-            </div>
-          </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderQuickRating = (resp) => {
+    const current = resp.teacher_rating || '';
+    return (
+      <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
+        <div className="text-xs font-semibold text-slate-600 mb-1.5">
+          当场判断（可选，推给 AI 评估前记录）
+        </div>
+        <div className="flex gap-1.5">
+          {Object.entries(RATING_META).map(([key, meta]) => (
+            <button
+              key={key}
+              onClick={() => handleQuickRate(resp, current === key ? '' : key)}
+              disabled={liveBusy[resp.id]}
+              className={`flex-1 text-[11px] font-bold rounded-lg py-2 transition ${
+                current === key
+                  ? meta.cls
+                  : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-40'
+              }`}
+            >
+              {meta.label}
+            </button>
+          ))}
+        </div>
+        <textarea
+          value={noteDrafts[resp.id] || ''}
+          onChange={e => setNoteDrafts(prev => ({ ...prev, [resp.id]: e.target.value }))}
+          rows={1}
+          placeholder="轻批注（可选，随当场判断一并保存）"
+          className="mt-2 w-full text-[11px] border border-slate-200 rounded-lg p-1.5 outline-none focus:ring-1 focus:ring-indigo-300"
+        />
+        {current && (
+          <div className="mt-1.5 text-[10px] text-green-600">
+            已记录：{RATING_META[current].label}（点击可取消）
+          </div>
         )}
       </div>
     );
@@ -364,7 +386,7 @@ export default function LiveCockpit() {
   const focusedStudent = students.find(s => s.id === focusId) || sortedStudents[0] || null;
   const focusedResp = focusedStudent ? respFor(focusedStudent.id) : null;
   const topicIdx = topics.findIndex(t => t.id === topic?.id);
-  // 处理队列：需要老师出手的学生（待确认/待评估/复述风险/3轮已满/处理中），
+  // 处理队列：需要老师出手的学生（待评估/复述风险/3轮已满/处理中），
   // 按优先级排序；教师点「已处理」移出，状态再次变化时自动重新入队。
   const queueItems = sortedStudents
     .map(s => {
@@ -428,8 +450,8 @@ export default function LiveCockpit() {
           {[
             { label: '已发言', value: `${spokenCount}/${students.length}`, cls: 'text-blue-600', dot: 'bg-blue-500' },
             { label: '已结束对话', value: `${finishedCount}/${students.length}`, cls: 'text-purple-600', dot: 'bg-purple-500' },
-            { label: '已确认', value: `${reviewedCount}/${students.length}`, cls: 'text-green-600', dot: 'bg-green-500' },
-            { label: '达标', value: `${passCount}/${reviewedCount}`, cls: 'text-emerald-600', dot: 'bg-emerald-500' },
+            { label: '已完成', value: `${doneCount}/${students.length}`, cls: 'text-green-600', dot: 'bg-green-500' },
+            { label: '达标', value: `${passCount}/${doneCount}`, cls: 'text-emerald-600', dot: 'bg-emerald-500' },
             { label: '待评估', value: `${pendingCount}`, cls: pendingCount > 0 ? 'text-red-600' : 'text-slate-400', dot: pendingCount > 0 ? 'bg-red-500' : 'bg-slate-300' },
           ].map(stat => (
             <div key={stat.label} className="rounded-xl bg-white border border-slate-200 px-3 py-2 flex items-center gap-2">
@@ -445,7 +467,7 @@ export default function LiveCockpit() {
             <div className="mt-1.5 h-1.5 bg-slate-100 rounded-full overflow-hidden">
               <div
                 className="h-full bg-green-500 rounded-full transition-all"
-                style={{ width: `${students.length ? Math.round((reviewedCount / students.length) * 100) : 0}%` }}
+                style={{ width: `${students.length ? Math.round((doneCount / students.length) * 100) : 0}%` }}
               />
             </div>
           </div>
@@ -545,14 +567,16 @@ export default function LiveCockpit() {
                         <div className="text-xs text-indigo-700 leading-relaxed">{liveAiQuestions[focusedResp.id]}</div>
                       </div>
                     )}
-                    {statusOf(focusedStudent.id) === 'submitted' && renderTeacherAsk(focusedResp)}
+                    {statusOf(focusedStudent.id) === 'submitted' && (
+                      <>
+                        {renderTeacherAsk(focusedResp)}
+                        {renderQuickRating(focusedResp)}
+                      </>
+                    )}
                     {statusOf(focusedStudent.id) === 'processing' && (
                       <div className="py-6 text-center text-sm text-amber-500">⏳ AI 评估处理中…</div>
                     )}
                     {statusOf(focusedStudent.id) === 'processed' && renderResult(focusedResp, focusedStudent)}
-                    {(liveFinished[focusedResp.id] || focusedResp.dialogue_finished) && statusOf(focusedStudent.id) !== 'processed' && (
-                      <div className="py-4 text-center text-sm text-slate-500">对话已结束，待评估</div>
-                    )}
                     {!liveStatus[focusedResp.id] && statusOf(focusedStudent.id) !== 'processed' && (
                       <div className="mt-2 text-[10px] text-slate-400">（历史作答：仅展示，可直接评估）</div>
                     )}
