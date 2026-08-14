@@ -15,6 +15,9 @@ uploads/
 *.docx
 *_unlocked.pdf
 record.m4a
+# 基准测试语音集：原始/归一化音频不进仓库（backend/data/sample/*.txt 文字稿保留）
+backend/data/sample/*.wav
+backend/data/sample/**/*.wav
 团队分工与时间线.pdf
 .env.bak*
 backend/bootstrap_run2.json

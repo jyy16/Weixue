@@ -72,6 +72,8 @@ async def import_audio(
         f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
     )
     dest = os.path.join(state.UPLOAD_DIR, safe_name)
+    # 上传目录可能不存在（例如全新克隆的仓库），先建目录再写文件。
+    os.makedirs(state.UPLOAD_DIR, exist_ok=True)
     with open(dest, "wb") as fh:
         fh.write(await file.read())
 
