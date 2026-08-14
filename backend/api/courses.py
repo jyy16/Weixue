@@ -1,5 +1,7 @@
 """Course / topic / student / response listing endpoints."""
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
