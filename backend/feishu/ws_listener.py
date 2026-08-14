@@ -29,6 +29,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
 
 from database import SessionLocal
 
+from .assistant import run_assistant_blocking
 from .bot import BotService
 from .card_actions import dispatch_card_action
 from .comment_delivery import deliver_student_comment
@@ -36,11 +37,6 @@ from .client import FeishuClient, FeishuConfig
 from .sync import BitableSyncer
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
-HELP_REPLY = (
-    "思辨星机器人：收到评语确认卡片后，点「确认评分」即可存档并同步多维表格；"
-    "点「去网页修改」会直接打开网页批改页。发送“帮助”可随时查看本说明。"
-)
 
 
 def _sync_response_blocking(response_id: int) -> None:
@@ -113,36 +109,27 @@ def on_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
     return response
 
 
-def _reply_help_blocking(message_id: str) -> None:
-    async def _run() -> None:
-        config = FeishuConfig()
-        client = FeishuClient(config)
-        try:
-            await BotService(client).reply_text(message_id, HELP_REPLY)
-        except Exception:
-            pass
-        finally:
-            await client.close()
-
-    asyncio.run(_run())
-
-
 def on_message_receive(data: P2ImMessageReceiveV1) -> None:
-    """im.message.receive_v1: someone messaged the bot. Mirrors the help-ish
-    auto-reply behaviour of the HTTP /api/feishu/events endpoint."""
-    message = data.event.message if data.event else None
+    """im.message.receive_v1: route teacher text to the 思辨星助教 dispatcher
+    (shared with the HTTP /api/feishu/events endpoint)."""
+    event = data.event if data else None
+    message = event.message if event else None
     if message is None or not message.message_id:
         return
-    text = ""
-    if message.message_type == "text":
-        try:
-            text = json.loads(message.content or "{}").get("text", "")
-        except (TypeError, ValueError):
-            text = ""
-    if "评语" not in text and "帮助" not in text:
+    if message.message_type != "text":
         return
+    text = ""
+    try:
+        text = json.loads(message.content or "{}").get("text", "")
+    except (TypeError, ValueError):
+        text = ""
+    sender = ""
+    if event and event.sender and event.sender.sender_id:
+        sender = event.sender.sender_id.open_id or ""
     threading.Thread(
-        target=_reply_help_blocking, args=(message.message_id,), daemon=True
+        target=run_assistant_blocking,
+        args=(sender, text, message.message_id),
+        daemon=True,
     ).start()
 
 

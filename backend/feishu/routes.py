@@ -29,6 +29,7 @@ from database import (
     get_db,
 )
 
+from .assistant import run_assistant_async
 from .bot import BotService
 from .card_actions import dispatch_card_action
 from .comment_delivery import deliver_student_comment
@@ -192,22 +193,12 @@ async def feishu_events(
                 text = json.loads(message.get("content", "{}")).get("text", "")
             except (TypeError, ValueError):
                 text = ""
-        if message_id and ("评语" in text or "帮助" in text):
-            background_tasks.add_task(_reply_bot_help, message_id)
-    return {"code": 0, "msg": "ack"}
-
-
-async def _reply_bot_help(message_id: str) -> None:
-    """Lightweight im.message.receive_v1 dispatch: answer help-ish messages."""
-    try:
-        bot = BotService(get_client())
-        await bot.reply_text(
-            message_id,
-            "思辨星机器人：教师可在网页端生成评语后由机器人推送确认卡片；"
-            "如需帮助请联调群内说明。",
+        sender = ((payload.get("sender") or {}).get("sender_id") or {}).get(
+            "open_id", ""
         )
-    except Exception:
-        pass
+        if message_id:
+            background_tasks.add_task(run_assistant_async, sender, text, message_id)
+    return {"code": 0, "msg": "ack"}
 
 
 @router.post("/card")

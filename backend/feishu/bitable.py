@@ -141,6 +141,14 @@ class BitableService:
             "POST", f"{self._base(table_id)}/records/batch_update", json_body={"records": records}
         )
 
+    async def batch_delete_records(self, table_id: str, record_ids: list[str]) -> Any:
+        """Delete records by id (max 500 per call)."""
+        return await self.client.request(
+            "POST",
+            f"{self._base(table_id)}/records/batch_delete",
+            json_body={"records": record_ids},
+        )
+
     # ── Field management (schema bootstrap, best effort) ────────────────
 
     async def list_fields(self, table_id: str) -> list[dict]:

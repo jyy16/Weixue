@@ -17,8 +17,10 @@ Design:
 - Pull fetches rows with a per-course 班级 filter so unmatched counts are not
   polluted by other courses' rows; if the remote table predates the 班级
   field it degrades to a full scan and marks the summary filtered=False.
-- Local entity deletion never deletes remote rows (Bitable is the teacher's
-  review surface); sync only prunes the orphaned local FeishuBinding rows.
+- Incremental pushes (sync_response / sync_prep_plan) never delete remote
+  rows; the full push (sync_course) ends with a reconcile step that removes
+  remote rows with no local binding (stale rows left by old seeds or deleted
+  entities), so Bitable stays a clean mirror of the local DB.
 - Every sync is guarded: missing credentials or API errors never break the
   assessment flow. Failures are reported in the returned summary and are
   visible via GET /api/feishu/bitable/status.
@@ -422,11 +424,11 @@ class BitableSyncer:
     def _prune_orphan_bindings(self, db: Session) -> int:
         """Delete bindings whose local entity no longer exists (review issue 3).
 
-        Deletion of local topics/students/responses doesn't touch Bitable: the
-        remote rows stay as the teacher's review surface (we never delete
-        teacher-visible data remotely). This pruner only removes the local
-        binding rows left behind, so they can't be counted as phantom
-        unmatched rows or block a re-created entity from binding cleanly.
+        Deletion of local topics/students/responses doesn't touch Bitable on
+        its own; the full push's reconcile step removes the stale remote rows
+        afterwards. This pruner only removes the local binding rows left
+        behind, so they can't be counted as phantom unmatched rows or block a
+        re-created entity from binding cleanly.
         """
         live_ids = {
             "course": {row[0] for row in db.query(Course.id)},
@@ -441,6 +443,43 @@ class BitableSyncer:
                 db.delete(binding)
                 removed += 1
         return removed
+
+    async def _reconcile_tables(self, db: Session) -> dict:
+        """Delete remote rows without a local binding (stale rows from old
+        seeds or locally-deleted entities).
+
+        Only rows created by this app's sync have bindings; anything else in
+        the tables is treated as stale and removed -- local SQLite is the
+        single source of truth, Bitable is its mirror. Runs only on the full
+        push (sync_course), never on incremental pushes.
+        """
+        reconciled = {}
+        for key in TABLE_KEYS:
+            table_id = self._table_id(key)
+            if not table_id:
+                continue
+            bound = {
+                str(b.remote_record_id)
+                for b in db.query(FeishuBinding)
+                .filter(FeishuBinding.table_key == key)
+                if b.remote_record_id
+            }
+            deleted = 0
+            stale: list[str] = []
+            async for item in self._iter_remote_records(table_id):
+                rid = str(item.get("record_id") or "")
+                if not rid or rid in bound:
+                    continue
+                stale.append(rid)
+                if len(stale) >= 500:
+                    await self.service.batch_delete_records(table_id, stale)
+                    deleted += len(stale)
+                    stale = []
+            if stale:
+                await self.service.batch_delete_records(table_id, stale)
+                deleted += len(stale)
+            reconciled[key] = deleted
+        return reconciled
 
     async def sync_course(self, db: Session, course_id: int) -> dict:
         if not self.available:
@@ -486,6 +525,10 @@ class BitableSyncer:
                 build_prep_plan_record(plan, course, topic_map),
                 summary,
             )
+        try:
+            summary["reconciled"] = await self._reconcile_tables(db)
+        except Exception as exc:  # noqa: BLE001 - reconcile is best effort
+            summary["reconcile_error"] = str(exc)
         try:
             db.commit()  # one transaction per course push (review issue 5)
         except Exception as exc:  # noqa: BLE001 - sync must never break the app
