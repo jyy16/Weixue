@@ -1,0 +1,444 @@
+{
+  "meta": {
+    "generated_at": "2026-08-15 00:33:57",
+    "llm_provider": "deepseek",
+    "llm_model": "deepseek-v4-flash",
+    "llm_base_url": "(provider 默认)",
+    "llm_api_key_masked": "sk-499***",
+    "asr_provider_env": "qwen_asr",
+    "asr_model_env": "qwen3-asr-flash",
+    "python": "3.14.3",
+    "git_commit": "acb5e8d"
+  },
+  "results": {
+    "calibration": {
+      "title": "校准记忆 A/B",
+      "notes": [
+        "口径：同 9 条教师已批改作答，deepseek-v4-flash，同日两次评估；参照为团队演示教师终评（模拟教师）。",
+        "校准记录来自第 1 轮实际观测的 AI->教师偏差（AI 初评 -> 教师终评 + 理由），模拟教师逐条修正后的沉淀。",
+        "本实验证明校准机制会响应教师修正（few-shot 收敛），不是真实教师验证结论。"
+      ],
+      "tables": [
+        {
+          "caption": "校准 A/B（9 条作答，同一教师参照）",
+          "headers": [
+            "指标",
+            "A 无校准",
+            "B 校准记忆"
+          ],
+          "rows": [
+            [
+              "9 条整体完全一致",
+              "0/9",
+              "0/9"
+            ],
+            [
+              "45 维完全一致",
+              "12/45（27%）",
+              "18/45（40%）"
+            ],
+            [
+              "≤1 级占比（45 维）",
+              "25/45（56%）",
+              "22/45（49%）"
+            ],
+            [
+              "AI 偏高次数",
+              30,
+              22
+            ],
+            [
+              "AI 偏低次数",
+              3,
+              5
+            ],
+            [
+              "单轮总耗时（秒）",
+              "180.9",
+              "304.1"
+            ],
+            [
+              "错误/跳过",
+              "0/0",
+              "0/0"
+            ]
+          ]
+        },
+        {
+          "caption": "分维度一致率（45 维）",
+          "headers": [
+            "维度",
+            "A 无校准",
+            "B 校准记忆"
+          ],
+          "rows": [
+            [
+              "立意",
+              "4/9（44%）",
+              "5/9（56%）"
+            ],
+            [
+              "选材",
+              "3/9（33%）",
+              "3/9（33%）"
+            ],
+            [
+              "结构",
+              "0/9（0%）",
+              "1/9（11%）"
+            ],
+            [
+              "语言",
+              "0/9（0%）",
+              "1/9（11%）"
+            ],
+            [
+              "视角",
+              "5/9（56%）",
+              "8/9（89%）"
+            ]
+          ]
+        },
+        {
+          "caption": "注入的校准记录（模拟教师修正）",
+          "headers": [
+            "学生",
+            "AI 初评",
+            "教师终评",
+            "修正维度数"
+          ],
+          "rows": [
+            [
+              "小明",
+              "立意A+、选材A+、结构A+、语言A、视角A+",
+              "立意A、选材A、结构A-、语言A-、视角B+",
+              5
+            ],
+            [
+              "小雨",
+              "立意A、选材A、结构A、语言A、视角A-",
+              "立意B+、选材A-、结构B+、语言A-、视角A-",
+              4
+            ],
+            [
+              "豆豆",
+              "立意A-、选材A-、结构A-、语言A-、视角A-",
+              "立意A-、选材B+、结构B+、语言B+、视角B+",
+              4
+            ],
+            [
+              "浩浩",
+              "立意A+、选材A+、结构A+、语言A+、视角A+",
+              "立意A、选材A、结构A、语言A-、视角A+",
+              4
+            ],
+            [
+              "佳怡",
+              "立意A+、选材A、结构A+、语言A、视角A+",
+              "立意A、选材A、结构A-、语言A-、视角A",
+              4
+            ]
+          ]
+        }
+      ],
+      "data": {
+        "run_a": {
+          "sec": 180.876,
+          "quality": {
+            "compared": 9,
+            "exact_all": 0,
+            "dims_exact": 12,
+            "dims_total": 45,
+            "within1": 25,
+            "ai_higher": 30,
+            "ai_lower": 3,
+            "per_dim": {
+              "position": {
+                "match": 4,
+                "total": 9
+              },
+              "material": {
+                "match": 3,
+                "total": 9
+              },
+              "structure": {
+                "match": 0,
+                "total": 9
+              },
+              "language": {
+                "match": 0,
+                "total": 9
+              },
+              "perspective": {
+                "match": 5,
+                "total": 9
+              }
+            }
+          }
+        },
+        "run_b": {
+          "sec": 304.113,
+          "quality": {
+            "compared": 9,
+            "exact_all": 0,
+            "dims_exact": 18,
+            "dims_total": 45,
+            "within1": 22,
+            "ai_higher": 22,
+            "ai_lower": 5,
+            "per_dim": {
+              "position": {
+                "match": 5,
+                "total": 9
+              },
+              "material": {
+                "match": 3,
+                "total": 9
+              },
+              "structure": {
+                "match": 1,
+                "total": 9
+              },
+              "language": {
+                "match": 1,
+                "total": 9
+              },
+              "perspective": {
+                "match": 8,
+                "total": 9
+              }
+            }
+          }
+        },
+        "calibration_records": [
+          {
+            "response_id": 4,
+            "ai_original_scores": {
+              "position": "A+",
+              "material": "A+",
+              "structure": "A+",
+              "language": "A",
+              "perspective": "A+"
+            },
+            "teacher_final_scores": {
+              "position": "A",
+              "material": "A",
+              "structure": "A-",
+              "language": "A-",
+              "perspective": "B+"
+            },
+            "modifications": [
+              {
+                "dimension": "position",
+                "from_rating": "A+",
+                "to_rating": "A",
+                "reason": "教师复核：立意维度 AI 初评A+偏高，学生表现更符合A级描述，按机构口径修正"
+              },
+              {
+                "dimension": "material",
+                "from_rating": "A+",
+                "to_rating": "A",
+                "reason": "教师复核：选材维度 AI 初评A+偏高，学生表现更符合A级描述，按机构口径修正"
+              },
+              {
+                "dimension": "structure",
+                "from_rating": "A+",
+                "to_rating": "A-",
+                "reason": "教师复核：结构维度 AI 初评A+偏高，学生表现更符合A-级描述，按机构口径修正"
+              },
+              {
+                "dimension": "language",
+                "from_rating": "A",
+                "to_rating": "A-",
+                "reason": "教师复核：语言维度 AI 初评A偏高，学生表现更符合A-级描述，按机构口径修正"
+              },
+              {
+                "dimension": "perspective",
+                "from_rating": "A+",
+                "to_rating": "B+",
+                "reason": "教师复核：视角维度 AI 初评A+偏高，学生表现更符合B+级描述，按机构口径修正"
+              }
+            ],
+            "note": "模拟教师校准：按本机构口径复核后修正（A/B 演示）。"
+          },
+          {
+            "response_id": 1,
+            "ai_original_scores": {
+              "position": "A",
+              "material": "A",
+              "structure": "A",
+              "language": "A",
+              "perspective": "A-"
+            },
+            "teacher_final_scores": {
+              "position": "B+",
+              "material": "A-",
+              "structure": "B+",
+              "language": "A-",
+              "perspective": "A-"
+            },
+            "modifications": [
+              {
+                "dimension": "position",
+                "from_rating": "A",
+                "to_rating": "B+",
+                "reason": "教师复核：立意维度 AI 初评A偏高，学生表现更符合B+级描述，按机构口径修正"
+              },
+              {
+                "dimension": "material",
+                "from_rating": "A",
+                "to_rating": "A-",
+                "reason": "教师复核：选材维度 AI 初评A偏高，学生表现更符合A-级描述，按机构口径修正"
+              },
+              {
+                "dimension": "structure",
+                "from_rating": "A",
+                "to_rating": "B+",
+                "reason": "教师复核：结构维度 AI 初评A偏高，学生表现更符合B+级描述，按机构口径修正"
+              },
+              {
+                "dimension": "language",
+                "from_rating": "A",
+                "to_rating": "A-",
+                "reason": "教师复核：语言维度 AI 初评A偏高，学生表现更符合A-级描述，按机构口径修正"
+              }
+            ],
+            "note": "模拟教师校准：按本机构口径复核后修正（A/B 演示）。"
+          },
+          {
+            "response_id": 2,
+            "ai_original_scores": {
+              "position": "A-",
+              "material": "A-",
+              "structure": "A-",
+              "language": "A-",
+              "perspective": "A-"
+            },
+            "teacher_final_scores": {
+              "position": "A-",
+              "material": "B+",
+              "structure": "B+",
+              "language": "B+",
+              "perspective": "B+"
+            },
+            "modifications": [
+              {
+                "dimension": "material",
+                "from_rating": "A-",
+                "to_rating": "B+",
+                "reason": "教师复核：选材维度 AI 初评A-偏高，学生表现更符合B+级描述，按机构口径修正"
+              },
+              {
+                "dimension": "structure",
+                "from_rating": "A-",
+                "to_rating": "B+",
+                "reason": "教师复核：结构维度 AI 初评A-偏高，学生表现更符合B+级描述，按机构口径修正"
+              },
+              {
+                "dimension": "language",
+                "from_rating": "A-",
+                "to_rating": "B+",
+                "reason": "教师复核：语言维度 AI 初评A-偏高，学生表现更符合B+级描述，按机构口径修正"
+              },
+              {
+                "dimension": "perspective",
+                "from_rating": "A-",
+                "to_rating": "B+",
+                "reason": "教师复核：视角维度 AI 初评A-偏高，学生表现更符合B+级描述，按机构口径修正"
+              }
+            ],
+            "note": "模拟教师校准：按本机构口径复核后修正（A/B 演示）。"
+          },
+          {
+            "response_id": 6,
+            "ai_original_scores": {
+              "position": "A+",
+              "material": "A+",
+              "structure": "A+",
+              "language": "A+",
+              "perspective": "A+"
+            },
+            "teacher_final_scores": {
+              "position": "A",
+              "material": "A",
+              "structure": "A",
+              "language": "A-",
+              "perspective": "A+"
+            },
+            "modifications": [
+              {
+                "dimension": "position",
+                "from_rating": "A+",
+                "to_rating": "A",
+                "reason": "教师复核：立意维度 AI 初评A+偏高，学生表现更符合A级描述，按机构口径修正"
+              },
+              {
+                "dimension": "material",
+                "from_rating": "A+",
+                "to_rating": "A",
+                "reason": "教师复核：选材维度 AI 初评A+偏高，学生表现更符合A级描述，按机构口径修正"
+              },
+              {
+                "dimension": "structure",
+                "from_rating": "A+",
+                "to_rating": "A",
+                "reason": "教师复核：结构维度 AI 初评A+偏高，学生表现更符合A级描述，按机构口径修正"
+              },
+              {
+                "dimension": "language",
+                "from_rating": "A+",
+                "to_rating": "A-",
+                "reason": "教师复核：语言维度 AI 初评A+偏高，学生表现更符合A-级描述，按机构口径修正"
+              }
+            ],
+            "note": "模拟教师校准：按本机构口径复核后修正（A/B 演示）。"
+          },
+          {
+            "response_id": 8,
+            "ai_original_scores": {
+              "position": "A+",
+              "material": "A",
+              "structure": "A+",
+              "language": "A",
+              "perspective": "A+"
+            },
+            "teacher_final_scores": {
+              "position": "A",
+              "material": "A",
+              "structure": "A-",
+              "language": "A-",
+              "perspective": "A"
+            },
+            "modifications": [
+              {
+                "dimension": "position",
+                "from_rating": "A+",
+                "to_rating": "A",
+                "reason": "教师复核：立意维度 AI 初评A+偏高，学生表现更符合A级描述，按机构口径修正"
+              },
+              {
+                "dimension": "structure",
+                "from_rating": "A+",
+                "to_rating": "A-",
+                "reason": "教师复核：结构维度 AI 初评A+偏高，学生表现更符合A-级描述，按机构口径修正"
+              },
+              {
+                "dimension": "language",
+                "from_rating": "A",
+                "to_rating": "A-",
+                "reason": "教师复核：语言维度 AI 初评A偏高，学生表现更符合A-级描述，按机构口径修正"
+              },
+              {
+                "dimension": "perspective",
+                "from_rating": "A+",
+                "to_rating": "A",
+                "reason": "教师复核：视角维度 AI 初评A+偏高，学生表现更符合A级描述，按机构口径修正"
+              }
+            ],
+            "note": "模拟教师校准：按本机构口径复核后修正（A/B 演示）。"
+          }
+        ]
+      }
+    }
+  }
+}
