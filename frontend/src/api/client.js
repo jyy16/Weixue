@@ -95,6 +95,11 @@ export const reviewResponse = async (...a) => {
   return demo ? demo.reviewResponse(...a) :
     api.post(`/responses/${a[0]}/review`, a[1]).then(r => r.data);
 };
+export const quickRating = async (...a) => {
+  const demo = await _demoImpl();
+  return demo ? demo.quickRating(...a) :
+    api.post(`/responses/${a[0]}/quick-rating`, a[1]).then(r => r.data);
+};
 
 // ── Audio import (ASR pipeline) ──────────────────────────
 const AUDIO_EXT_BY_MIME = {

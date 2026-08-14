@@ -233,6 +233,15 @@ export const reviewResponse = (rid, data) => {
   return ok(_parseResponse(response));
 };
 
+export const quickRating = (rid, data) => {
+  const response = _data.responses.find(r => r.id === rid);
+  if (!response) return Promise.reject(new Error('Response not found'));
+  response.teacher_rating = data.rating || '';
+  if (data.note !== undefined) response.teacher_note = data.note || '';
+  _persist();
+  return ok(_parseResponse(response));
+};
+
 export const importAudio = (cid, studentId, topicId, file, source) => {
   let resp = _data.responses.find(
     r => r.student_id === studentId && r.topic_id === topicId

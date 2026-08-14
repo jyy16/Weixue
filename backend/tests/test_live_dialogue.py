@@ -74,6 +74,24 @@ with TestClient(main.app) as client:
         {"role": t["role"], "content": t["content"]} for t in dialogue2
     ]
 
+    # 推给 AI 评估前先记录当场判断：只存 teacher_rating / teacher_note，
+    # 不标记 teacher_reviewed（正式五维批改仍在评估页进行）。
+    qr = client.post(f"/api/responses/{out['rid']}/quick-rating", json={
+        "rating": "guide", "note": "需要引导举例",
+    }).json()
+    out["quick_rating"] = qr.get("teacher_rating")
+    out["quick_note"] = qr.get("teacher_note")
+    out["quick_reviewed"] = qr.get("teacher_reviewed")
+    out["bad_rating_status"] = client.post(
+        f"/api/responses/{out['rid']}/quick-rating", json={"rating": "wat"}
+    ).status_code
+
+    # 推给 AI 评估后：当场判断保留，仍未标记已确认。
+    assessed = client.post(f"/api/responses/{out['rid']}/assess").json()
+    out["assessed_status"] = assessed.get("processing_status")
+    out["rating_after_assess"] = assessed.get("teacher_rating")
+    out["reviewed_after_assess"] = assessed.get("teacher_reviewed")
+
 print(json.dumps(out, ensure_ascii=False))
 """
         proc = subprocess.run(
@@ -93,6 +111,13 @@ print(json.dumps(out, ensure_ascii=False))
             [t["role"] for t in out["dialogue_after_ai"]],
             ["student", "ai_suggestion"],
         )
+        self.assertEqual(out["quick_rating"], "guide")
+        self.assertEqual(out["quick_note"], "需要引导举例")
+        self.assertFalse(out["quick_reviewed"])
+        self.assertEqual(out["bad_rating_status"], 400)
+        self.assertEqual(out["assessed_status"], "submitted")
+        self.assertEqual(out["rating_after_assess"], "guide")
+        self.assertFalse(out["reviewed_after_assess"])
 
     def test_clear_course_responses_keeps_students_and_topics(self):
         script = r"""

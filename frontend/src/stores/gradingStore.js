@@ -567,6 +567,19 @@ const useStore = create((set, get) => ({
     return updated;
   },
 
+  quickRateLive: async (responseId, { rating, note }) => {
+    // 推给 AI 评估之前的“当场判断”：只记录 teacher_rating / teacher_note，
+    // 不标记 teacher_reviewed（正式五维批改仍在评估页进行）。
+    try {
+      const updated = await api.quickRating(responseId, { rating: rating || '', note: note || '' });
+      get()._upsertResponse(updated);
+      return updated;
+    } catch (e) {
+      console.warn('quickRating failed:', e);
+      return null;
+    }
+  },
+
 
   openStudentWindow: (studentId) => {
     const { courseId, liveTopicId } = get();

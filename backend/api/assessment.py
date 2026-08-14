@@ -11,7 +11,9 @@ from database import (
 from feishu.reviews import apply_teacher_review, sync_tags_to_library
 from feishu.sync import BitableSyncer
 from grading.rubric_loader import RubricLoader
-from schemas import StatusUpdate, StudentResponseOut, TeacherReview
+from schemas import (
+    QuickRatingUpdate, StatusUpdate, StudentResponseOut, TeacherReview,
+)
 
 from . import state
 
@@ -317,6 +319,30 @@ async def _sync_response_after_review(response_id: int):
         pass
     finally:
         db.close()
+
+
+@router.post("/api/responses/{rid}/quick-rating", response_model=StudentResponseOut)
+def save_quick_rating(
+    rid: int,
+    body: QuickRatingUpdate,
+    db: Session = Depends(get_db),
+):
+    """Save the teacher's on-the-spot quick rating + note (before AI push).
+
+    Unlike /review, this never marks the response teacher_reviewed and never
+    creates calibration records; it only records the live-class judgment.
+    """
+    resp = db.query(StudentResponse).get(rid)
+    if not resp:
+        raise HTTPException(404, "Response not found")
+    if body.rating not in {"", "good", "guide", "echo"}:
+        raise HTTPException(400, "invalid rating (good|guide|echo)")
+    resp.teacher_rating = body.rating
+    resp.teacher_note = (body.note or "").strip()
+    db.commit()
+    db.refresh(resp)
+    return resp
+
 
 @router.patch("/api/responses/{rid}/status", response_model=StudentResponseOut)
 def update_response_status(rid: int, body: StatusUpdate, db: Session = Depends(get_db)):
