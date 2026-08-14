@@ -123,14 +123,14 @@ Invoke-RestMethod http://127.0.0.1:8000/api/courses/<课程ID>/students |
 
 ```powershell
 cd D:\jyy\2026_summer\Weixue\backend
-python -m uvicorn main:app --reload
+python start.py --reload
 ```
 
-飞书长连接监听器：
+说明：`python start.py` 会同时启动 FastAPI 与飞书长连接监听器（ws_listener，日志见 `ws_listener.log`；已有监听实例时自动跳过，不会重复启动）。如需分开控制：
 
 ```powershell
-cd D:\jyy\2026_summer\Weixue\backend
-python -m feishu.ws_listener
+python start.py --no-listener        # 只启动 API
+python -m feishu.ws_listener         # 只启动飞书长连接（手动方式）
 ```
 
 前端：
@@ -140,7 +140,7 @@ cd D:\jyy\2026_summer\Weixue\frontend
 npm run dev
 ```
 
-`ws_listener` 必须保持运行，用于接收教师点击飞书卡片按钮产生的回调。机器上只能保留一个本项目的监听进程；多个新旧监听器同时连接可能导致回调被旧进程接收，表现为“有时成功、有时失败”。
+`ws_listener` 必须保持运行（`python start.py` 一键启动时会自动拉起），用于接收教师点击飞书卡片按钮产生的回调。机器上只能保留一个本项目的监听进程；多个新旧监听器同时连接可能导致回调被旧进程接收，表现为“有时成功、有时失败”。启动脚本已做重复实例检测，手动启动前请先确认无残留监听进程。
 
 可在 Windows 中检查监听进程：
 
@@ -204,7 +204,7 @@ Get-CimInstance Win32_Process |
 
 ### 9.4 教师点击卡片后没有发送给学生
 
-检查 `python -m feishu.ws_listener` 是否正在运行且只有一个实例。修改监听代码、权限或事件配置后，需要停止旧进程并重新启动。
+检查 `python -m feishu.ws_listener` 是否正在运行且只有一个实例（用 `python start.py` 启动时会自动拉起监听器）。修改监听代码、权限或事件配置后，需要停止旧进程并重新启动。
 
 监听器日志中的 `processor not found` 如果对应 `im.message.message_read_v1` 或 `im.chat.access_event.bot_p2p_chat_entered_v1`，表示飞书投递了本项目没有注册处理器的附加事件，本身不等于评语发送失败。是否发送成功应以学生投递状态、发送接口响应和学生端实际收件为准。
 
@@ -223,4 +223,4 @@ Get-CimInstance Win32_Process |
 - [ ] 同一张卡重复点击不会重复投递。
 - [ ] 修改评语后，旧卡片不能发送过期内容。
 - [ ] 成功、失败和发送中状态能够在学生管理页查看。
-- [ ] 只运行一个 `feishu.ws_listener` 实例。
+- [ ] 只运行一个 `feishu.ws_listener` 实例（`start.py` 已自动检测防重复）。

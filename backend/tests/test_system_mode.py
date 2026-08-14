@@ -28,6 +28,8 @@ for k in [k for k in os.environ if k.startswith("FEISHU_")]:
     os.environ.pop(k, None)
 sys.path.insert(0, os.getcwd())
 
+import dotenv
+dotenv.load_dotenv = lambda *args, **kwargs: False
 import main
 from fastapi.testclient import TestClient
 from database import Course, SessionLocal

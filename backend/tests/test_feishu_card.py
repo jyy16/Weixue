@@ -480,6 +480,8 @@ class SameDraftLLM:
         return "你表达很清晰，继续加油！"
 
 main_module.LLMClient = SameDraftLLM
+from api import comments as comments_module
+comments_module.LLMClient = SameDraftLLM
 db = SessionLocal()
 resp = db.get(StudentResponse, rid)
 resp.teacher_reviewed = True

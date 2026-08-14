@@ -61,7 +61,10 @@ os.environ["ASR_API_KEY"] = ""
 os.environ["ASR_MODEL"] = ""
 sys.path.insert(0, os.getcwd())
 
+import dotenv
+dotenv.load_dotenv = lambda *args, **kwargs: False
 import main
+from api import state
 from fastapi.testclient import TestClient
 from database import (
     AudioRecording,
@@ -72,16 +75,16 @@ from database import (
     StudentResponse,
 )
 
-main.UPLOAD_DIR = os.path.join(_TMP, "uploads")
-os.makedirs(main.UPLOAD_DIR, exist_ok=True)
+state.UPLOAD_DIR = os.path.join(_TMP, "uploads")
+os.makedirs(state.UPLOAD_DIR, exist_ok=True)
 
 
 def upload_count():
     return len(
         [
             f
-            for f in os.listdir(main.UPLOAD_DIR)
-            if os.path.isfile(os.path.join(main.UPLOAD_DIR, f))
+            for f in os.listdir(state.UPLOAD_DIR)
+            if os.path.isfile(os.path.join(state.UPLOAD_DIR, f))
         ]
     )
 

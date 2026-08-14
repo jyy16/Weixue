@@ -28,6 +28,8 @@ os.environ["ASR_API_KEY"] = ""
 os.environ["ASR_PROVIDER"] = "mock"
 sys.path.insert(0, os.getcwd())
 
+import dotenv
+dotenv.load_dotenv = lambda *args, **kwargs: False
 import main
 import seed
 from fastapi.testclient import TestClient

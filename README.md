@@ -79,7 +79,19 @@ AI 评估不应该"忘掉"教师的修正偏好。每当教师在批改页覆盖
 ```
 Weixue/
 ├── backend/
-│   ├── main.py                # FastAPI 路由（API + 静态文件托管）
+│   ├── main.py                # FastAPI 装配（挂载路由 + 生命周期 + 静态托管）
+│   ├── start.py               # 一键启动：uvicorn + 自动拉起飞书长连接 ws_listener
+│   ├── api/                   # 路由模块（按领域拆分，由原 main.py 重构而来）
+│   │   ├── state.py           # 运行时单例（llm/evaluator/companion/feishu）与共享工具
+│   │   ├── settings.py        # 设置 / ASR / 模式切换
+│   │   ├── courses.py         # 课程 / 辩题 / 学生 / 作答
+│   │   ├── assessment.py      # 评估 / 批改 / 校准记录
+│   │   ├── companion.py       # 课堂伴学对话
+│   │   ├── recordings.py      # 音频 / 文本录入
+│   │   ├── comments.py        # 评语生成 / 保存 / 发送
+│   │   ├── prep.py            # 备课辅助（讲评计划 / AI 总结）
+│   │   ├── tags.py            # 标签库
+│   │   └── reports.py         # 学情报告
 │   ├── database.py            # SQLAlchemy 数据模型
 │   ├── schemas.py             # Pydantic 请求/响应模型
 │   ├── seed.py                # 演示数据填充
@@ -90,9 +102,11 @@ Weixue/
 │   │   ├── evaluator.py       # 双层流水线（Layer1 文本清洗 + Layer2 维度评估）
 │   │   ├── rubric_loader.py   # Rubric 模板加载 + prompt 组装 + 校准注入
 │   │   └── llm.py             # LLM 客户端适配器
-│   ├── feishu/                # 飞书集成（多维表格 / 机器人）
+│   ├── feishu/                # 飞书集成（多维表格 / 机器人 / 长连接）
 │   ├── export_demo_data.py    # 导出演示数据到前端 demo 模式
 │   ├── restore_demo_state.py  # 从 demo-data.json 快照恢复教师批改状态
+│   ├── requirements.txt       # 运行依赖
+│   ├── requirements-dev.txt   # 开发/测试依赖（含 pytest）
 │   └── data/                  # SQLite 数据库
 ├── frontend/
 │   ├── src/
@@ -104,16 +118,17 @@ Weixue/
 │   │   └── stores/            # Zustand 状态管理
 │   └── package.json
 ├── docs/
-│   ├── 飞书集成技术方案.md    # 飞书集成设计与实施路线
-│   ├── 音频录入与转写.md      # 音频录入与转写技术文档
-│   └── 技术实现章节素材.md    # 参赛方案"技术实现"章节素材（供统稿）
-├── 团队分工与时间线.md        # 团队任务分工与倒排期
+│   ├── 飞书集成技术方案.md            # 飞书集成设计与实施路线
+│   ├── 音频录入与转写.md              # 音频录入与转写技术文档
+│   ├── 技术实现章节素材.md            # 参赛方案"技术实现"章节素材（供统稿）
+│   ├── 现场伴学设计与前端重构方案_v1.md  # 课堂伴学/学生端设计方案
+│   ├── 飞书教师与学生_open_id_配置与验收.md
+│   └── old/                         # 历史/过时文档归档（开题报告、验收记录等）
 ├── papers/                    # 核心参考文献
 │   ├── Kuhn_1999_*.pdf        # 认识论发展阶段模型
 │   ├── Byrnes_Dunbar_2014_*.pdf  # CT 前技能与认知发展
 │   ├── McNeill_2011_*.pdf     # CER 框架与科学论证
 │   └── Osborne_2004_*.pdf     # Toulmin 论证分析框架
-└── 开题报告.md
 ```
 
 ## 快速开始
@@ -127,17 +142,24 @@ Weixue/
 ### 方式2：开发环境
 
 ```bash
-# 后端
+# 后端（一键启动：自动填充演示数据 + 启动 API + 自动拉起飞书长连接 ws_listener）
 cd backend
 pip install -r requirements.txt
 编辑 .env 填入 LLM API Key
-python seed.py                # 填充演示数据
-uvicorn main:app --reload     # http://127.0.0.1:8000
+python start.py --reload      # http://127.0.0.1:8000（ws_listener 日志见 ws_listener.log）
+
+# 只启动 API、不启动飞书长连接
+python start.py --no-listener
 
 # 前端（另开终端）
 cd frontend
 npm install
 npm run dev                   # http://localhost:5173（自动代理到后端）
+
+# 后端测试（需要 dev 依赖，须在 backend/ 目录下运行）
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest tests -q
 ```
 
 `.env` 配置项：
@@ -163,6 +185,8 @@ FEISHU_APP_SECRET=xxx
 
 启动后端后，`GET /api/health` 检查数据库、飞书鉴权与多维表格状态。
 
+用 `python start.py` 一键启动时，`ws_listener`（飞书长连接，接收卡片按钮回调与机器人消息）会自动以子进程方式拉起，日志写入 `ws_listener.log`；若已有监听进程在运行则不会重复启动（飞书会把回调分发到所有活跃连接，重复监听会导致卡片点击时好时坏）。也可用 `python start.py --no-listener` 只跑 API。
+
 **多维表格（已联调，2026-08-10）**：评估完成 / 教师保存后，本地数据单向同步到多维表格（班级 / 辩题 / 学生 / 评估记录四张表），本地库是唯一事实源，表格只作展示与审阅面。应用凭证就位后一键引导：
 
 ```bash
@@ -170,7 +194,7 @@ cd backend
 python -m feishu.bootstrap_base   # 建 base + 4 表 + 写回 .env + 建字段选项 + 全量同步（幂等可重跑）
 ```
 
-`FEISHU_BITABLE_APP_TOKEN` 与 `FEISHU_BITABLE_TABLE_IDS` 由引导脚本自动写回 `.env`；未配置时同步保持 `deferred`，不会伪装为已接通，`GET /api/feishu/bitable/status` 可查看实时状态。联调细节与踩坑记录见 [docs/多维表格联调记录_2026-08-10.md](./docs/多维表格联调记录_2026-08-10.md)。
+`FEISHU_BITABLE_APP_TOKEN` 与 `FEISHU_BITABLE_TABLE_IDS` 由引导脚本自动写回 `.env`；未配置时同步保持 `deferred`，不会伪装为已接通，`GET /api/feishu/bitable/status` 可查看实时状态。联调细节与踩坑记录见 [docs/old/多维表格联调记录_2026-08-10.md](./docs/old/多维表格联调记录_2026-08-10.md)。
 
 ### 更新纯前端 demo 数据
 

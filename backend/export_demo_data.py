@@ -45,8 +45,7 @@ def row_dict(obj, kind: str) -> dict:
     for field in JSON_FIELDS.get(kind, []):
         if d.get(field) is not None:
             d[field] = json.dumps(d[field], ensure_ascii=False)
-    for key in ("created_at",):
-        value = d.get(key)
+    for key, value in list(d.items()):
         if value is not None and hasattr(value, "isoformat"):
             d[key] = value.isoformat()
     return d
