@@ -68,6 +68,7 @@ from api import state
 from fastapi.testclient import TestClient
 from database import (
     AudioRecording,
+    CompanionTurn,
     Course,
     DebateTopic,
     SessionLocal,
@@ -155,6 +156,11 @@ with TestClient(main.app) as client:
     out["import_recordings"] = db.query(AudioRecording).count()
     out["import_uploads"] = upload_count()
     rid = ok.json()["id"]
+    out["import_latest_transcript"] = ok.json().get("transcript", "")
+    out["import_student_turns"] = db.query(CompanionTurn).filter(
+        CompanionTurn.response_id == rid,
+        CompanionTurn.role == "student",
+    ).count()
 
     # 7) Re-upload replaces the old recording (row + file) instead of leaking.
     ok2 = client.post(
@@ -165,14 +171,40 @@ with TestClient(main.app) as client:
     assert ok2.status_code == 200, ok2.text
     out["reimport_recordings"] = db.query(AudioRecording).count()
     out["reimport_uploads"] = upload_count()
+    out["reimport_student_turns"] = db.query(CompanionTurn).filter(
+        CompanionTurn.response_id == rid,
+        CompanionTurn.role == "student",
+    ).count()
 
-    # 8) Deleting the response removes the recording row and its physical file.
+    # 8) A subsequent student-device recording appends a visible dialogue turn
+    # and extends raw_text instead of replacing the previous round.
+    appended = client.post(
+        f"/api/courses/{cid}/audio/import",
+        data={
+            "student_id": sid,
+            "topic_id": tid,
+            "source": "student_device",
+            "response_id": rid,
+        },
+        files={"file": ("d.m4a", b"\x00" * 1024, "audio/mp4")},
+    )
+    assert appended.status_code == 200, appended.text
+    out["append_latest_transcript"] = appended.json().get("transcript", "")
+    out["append_raw_text"] = appended.json().get("raw_text", "")
+    out["append_student_turns"] = db.query(CompanionTurn).filter(
+        CompanionTurn.response_id == rid,
+        CompanionTurn.role == "student",
+    ).count()
+    out["append_recordings"] = db.query(AudioRecording).count()
+    out["append_uploads"] = upload_count()
+
+    # 9) Deleting the response removes the recording row and its physical file.
     deleted = client.delete(f"/api/responses/{rid}")
     out["delete_status"] = deleted.status_code
     out["delete_recordings"] = db.query(AudioRecording).count()
     out["delete_uploads"] = upload_count()
 
-    # 9) Demo data must not survive a switch to a real provider (qwen_asr).
+    # 10) Demo data must not survive a switch to a real provider (qwen_asr).
     import seed
     seed.seed(force=True)
     fresh = SessionLocal()
@@ -184,7 +216,7 @@ with TestClient(main.app) as client:
     out["demo_after_real_courses"] = fresh.query(Course).count()
     out["demo_after_real_responses"] = fresh.query(StudentResponse).count()
 
-    # 10) Switching back to mock with an empty DB re-seeds the demo course.
+    # 11) Switching back to mock with an empty DB re-seeds the demo course.
     switched_mock = client.post("/api/settings/asr", json={"provider": "mock"})
     assert switched_mock.status_code == 200, switched_mock.text
     out["demo_after_mock_switch"] = switched_mock.json()["demo_data_present"]
@@ -235,10 +267,21 @@ class AudioImportAPITests(unittest.TestCase):
 
         self.assertEqual(result["import_status"], 200)
         self.assertEqual(result["import_transcript"], MOCK_TRANSCRIPT)
+        self.assertEqual(result["import_latest_transcript"], MOCK_TRANSCRIPT)
+        self.assertEqual(result["import_student_turns"], 1)
         self.assertEqual(result["import_recordings"], 1)
         self.assertEqual(result["import_uploads"], 1)
         self.assertEqual(result["reimport_recordings"], 1)
         self.assertEqual(result["reimport_uploads"], 1)
+        self.assertEqual(result["reimport_student_turns"], 1)
+
+        self.assertEqual(result["append_latest_transcript"], MOCK_TRANSCRIPT)
+        self.assertEqual(
+            result["append_raw_text"], f"{MOCK_TRANSCRIPT}\n{MOCK_TRANSCRIPT}"
+        )
+        self.assertEqual(result["append_student_turns"], 2)
+        self.assertEqual(result["append_recordings"], 1)
+        self.assertEqual(result["append_uploads"], 1)
 
         self.assertEqual(result["delete_status"], 200)
         self.assertEqual(result["delete_recordings"], 0)

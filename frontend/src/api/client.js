@@ -110,9 +110,9 @@ const AUDIO_EXT_BY_MIME = {
   'audio/mpeg': '.mp3',
   'audio/aac': '.aac',
 };
-export const importAudio = async (courseId, studentId, topicId, file, source) => {
+export const importAudio = async (courseId, studentId, topicId, file, source, responseId) => {
   const demo = await _demoImpl();
-  if (demo) return demo.importAudio(courseId, studentId, topicId, file, source);
+  if (demo) return demo.importAudio(courseId, studentId, topicId, file, source, responseId);
   const fd = new FormData();
   fd.append('student_id', studentId);
   fd.append('topic_id', topicId);
@@ -121,6 +121,7 @@ export const importAudio = async (courseId, studentId, topicId, file, source) =>
   const ext = (file && AUDIO_EXT_BY_MIME[file.type]) || '.webm';
   fd.append('file', file, file?.name || `recording${ext}`);
   fd.append('source', source || 'audio');
+  if (responseId) fd.append('response_id', responseId);
   return api.post(`/courses/${courseId}/audio/import`, fd).then(r => r.data);
 };
 export const importText = async (courseId, studentId, topicId, text, source) => {

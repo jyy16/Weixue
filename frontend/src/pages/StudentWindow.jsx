@@ -362,13 +362,21 @@ export default function StudentWindow({ studentId }) {
         } else {
           setSimNote('（正在转写语音…）');
           try {
-            const resp = await api.importAudio(courseId, Number(studentId), topicId, blob, 'student_device');
+            const resp = await api.importAudio(
+              courseId,
+              Number(studentId),
+              topicId,
+              blob,
+              'student_device',
+              responseIdRef.current || undefined,
+            );
             responseIdRef.current = resp.id;
             setResponseId(resp.id);
             const newCount = (turnCount || 0) + 1;
             setTurnCount(newCount);
-            setMessages(prev => [...prev, { role: 'student', content: resp.raw_text || '' }]);
-            publish('submitted', resp, newCount, { transcript: resp.raw_text || '' });
+            const latestTranscript = resp.transcript || resp.raw_text || '';
+            setMessages(prev => [...prev, { role: 'student', content: latestTranscript }]);
+            publish('submitted', resp, newCount, { transcript: latestTranscript });
             setEncouragement(newCount === 1 ? '你把想法说出来啦，真棒！' : '你又补充了新想法！');
             if (!endedRef.current && newCount < MAX_ROUNDS) await autoAsk(resp.id);
             else setSimNote(newCount >= MAX_ROUNDS ? '（已完成 3 轮对话，等待老师评估）' : '（对话已结束，等待老师评估）');
