@@ -110,6 +110,12 @@ async def import_audio(
         state._remove_audio_file(dest)
         raise HTTPException(500, f"转写异常：{exc}")
 
+    # 空转写视为失败：必须在删除旧录音/重置评估之前返回，否则上一轮数据
+    # 会被静默清掉（旧录音行、评估结果都会丢失）。
+    if not (transcript or "").strip():
+        state._remove_audio_file(dest)
+        raise HTTPException(400, "转写结果为空，本轮录音未保存（原录音与评估结果已保留）")
+
     if resp is None:
         resp = StudentResponse(
             student_id=student_id, topic_id=topic_id, raw_text="", source=source
@@ -132,6 +138,13 @@ async def import_audio(
     # A new transcript invalidates the previous assessment. Live rounds append
     # to the aggregate answer; management re-uploads replace it.
     _store_student_transcript(resp, transcript, append=append_round)
+    # 与 append_companion_turn 保持一致：满 3 轮学生作答自动结束对话。
+    if append_round:
+        student_rounds = sum(
+            1 for t in (resp.companion_turns or []) if t.role == "student"
+        )
+        if student_rounds >= 3:
+            resp.dialogue_finished = resp.dialogue_finished or "auto"
     resp.cleaned_text = ""
     resp.source = source
     resp.ai_dimension_scores = None

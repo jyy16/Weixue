@@ -33,8 +33,21 @@ export default function FeishuSyncCard({ courseId }) {
     setSyncResult('');
     try {
       const r = await api.syncFeishuBitable(courseId);
-      const synced = r.synced ?? r.records?.length ?? 0;
-      setSyncResult(`同步完成：新增/更新 ${synced} 条，跳过 ${r.skipped ?? 0} 条`);
+      // Backend returns per-table counters under r.tables
+      // ({created, updated, errors, skipped}); fall back to the older
+      // top-level shape only if tables is absent.
+      const tableCounters = r.tables ? Object.values(r.tables) : [];
+      const total = tableCounters.length
+        ? tableCounters.reduce((n, t) => n + (t.created ?? 0) + (t.updated ?? 0), 0)
+        : (r.synced ?? r.records?.length ?? 0);
+      const errors = tableCounters.reduce((n, t) => n + (t.errors ?? 0), 0);
+      const skipped = tableCounters.reduce((n, t) => n + (t.skipped ?? 0), 0);
+      if (r.error) {
+        setSyncResult(`同步失败：${r.error}`);
+      } else {
+        const failed = errors > 0 ? `，失败 ${errors} 条` : '';
+        setSyncResult(`同步完成：新增/更新 ${total} 条，跳过 ${skipped} 条${failed}`);
+      }
       refresh();
     } catch (e) {
       setSyncResult(`同步失败：${e?.response?.data?.detail || e?.message || '未知错误'}`);

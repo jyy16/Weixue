@@ -65,6 +65,7 @@ import dotenv
 dotenv.load_dotenv = lambda *args, **kwargs: False
 import main
 from api import state
+from asr import ASRClient
 from fastapi.testclient import TestClient
 from database import (
     AudioRecording,
@@ -198,6 +199,48 @@ with TestClient(main.app) as client:
     out["append_recordings"] = db.query(AudioRecording).count()
     out["append_uploads"] = upload_count()
 
+    # 8b) A third append auto-finishes the dialogue (matches append_companion_turn).
+    third = client.post(
+        f"/api/courses/{cid}/audio/import",
+        data={
+            "student_id": sid,
+            "topic_id": tid,
+            "source": "student_device",
+            "response_id": rid,
+        },
+        files={"file": ("e.m4a", b"\\x00" * 1024, "audio/mp4")},
+    )
+    assert third.status_code == 200, third.text
+    out["append3_dialogue_finished"] = db.get(StudentResponse, rid).dialogue_finished
+    out["append3_student_turns"] = db.query(CompanionTurn).filter(
+        CompanionTurn.response_id == rid,
+        CompanionTurn.role == "student",
+    ).count()
+
+    # 8c) An empty transcription must NOT delete the previous recording or
+    # wipe the accumulated answer (regression: live round 400 keeps round 1-3).
+    async def _empty_transcribe(self, path):
+        return ""
+
+    _orig_transcribe = ASRClient.transcribe
+    ASRClient.transcribe = _empty_transcribe
+    try:
+        empty = client.post(
+            f"/api/courses/{cid}/audio/import",
+            data={
+                "student_id": sid,
+                "topic_id": tid,
+                "source": "student_device",
+                "response_id": rid,
+            },
+            files={"file": ("f.m4a", b"\\x00" * 512, "audio/mp4")},
+        )
+    finally:
+        ASRClient.transcribe = _orig_transcribe
+    out["empty_status"] = empty.status_code
+    out["empty_recordings"] = db.query(AudioRecording).count()
+    out["empty_raw_text"] = db.get(StudentResponse, rid).raw_text
+
     # 9) Deleting the response removes the recording row and its physical file.
     deleted = client.delete(f"/api/responses/{rid}")
     out["delete_status"] = deleted.status_code
@@ -282,6 +325,15 @@ class AudioImportAPITests(unittest.TestCase):
         self.assertEqual(result["append_student_turns"], 2)
         self.assertEqual(result["append_recordings"], 1)
         self.assertEqual(result["append_uploads"], 1)
+
+        self.assertEqual(result["append3_dialogue_finished"], "auto")
+        self.assertEqual(result["append3_student_turns"], 3)
+        self.assertEqual(result["empty_status"], 400)
+        self.assertEqual(result["empty_recordings"], 1)
+        self.assertEqual(
+            result["empty_raw_text"],
+            f"{MOCK_TRANSCRIPT}\n{MOCK_TRANSCRIPT}\n{MOCK_TRANSCRIPT}",
+        )
 
         self.assertEqual(result["delete_status"], 200)
         self.assertEqual(result["delete_recordings"], 0)

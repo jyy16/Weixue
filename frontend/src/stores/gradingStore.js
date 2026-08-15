@@ -348,7 +348,9 @@ const useStore = create((set, get) => ({
             },
             liveTurnPhase: {
               ...state.liveTurnPhase,
-              [evt.responseId]: teacherFinished ? 'done' : 'awaiting_teacher',
+              // 学生/教师任一方结束对话后，对话即告完成，统一进入 done，
+              // 避免卡片一直停留在“待老师发回”。
+              [evt.responseId]: 'done',
             },
             livePendingSuggestions: nextPending,
           };
@@ -380,10 +382,15 @@ const useStore = create((set, get) => ({
       if (evt.status === 'submitted') {
         set(state => ({ liveTurnPhase: { ...state.liveTurnPhase, [evt.responseId]: 'ai_processing' } }));
       } else if (evt.status === 'processed') {
+        const dialogueFinished =
+          get().liveFinished[evt.responseId] || evt.response?.dialogue_finished;
         set(state => ({
           liveTurnPhase: {
             ...state.liveTurnPhase,
-            [evt.responseId]: evt.response?.teacher_reviewed ? 'done' : 'awaiting_teacher',
+            // 已结束的对话评估完成后直接显示“对话已结束”；
+            // 未结束的对话仍回到“待老师发回”（可继续发 AI 追问或结束）。
+            [evt.responseId]:
+              dialogueFinished || evt.response?.teacher_reviewed ? 'done' : 'awaiting_teacher',
           },
         }));
       }

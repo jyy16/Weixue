@@ -212,11 +212,22 @@ export default function StudentWindow({ studentId }) {
   };
 
   // ── AI 自动追问（企业要求：AI 直接和学生对话）──
+  // 后端 suggest-turn 有 30s 超时 + 一次重试，学生端不能无限期干等：
+  // 15s 无响应即让 catch 分支走备用追问（Promise.race 只保留先到的结果，
+  // 迟到的 LLM 返回会被丢弃，不会重复追加 AI 追问）。
+  const withTimeout = (promise, ms) =>
+    Promise.race([
+      promise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`suggestTurn timeout after ${ms}ms`)), ms),
+      ),
+    ]);
+
   const autoAsk = async (rid) => {
     if (endedRef.current) return; // 对话已结束则不再生成
     setAiThinking(true);
     try {
-      const suggestion = await api.suggestTurn(rid);
+      const suggestion = await withTimeout(api.suggestTurn(rid), 15000);
       if (endedRef.current) return; // await 期间被结束则丢弃结果
       if (pausedRef.current) return; // 全局暂停期间不继续
       if (modeRef.current === 'confirm') {

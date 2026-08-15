@@ -90,9 +90,15 @@ async def suggest_companion_turn(rid: int, db: Session = Depends(get_db)):
         raise HTTPException(400, "response has no text yet")
 
     topic = resp.topic
+    turns = resp.companion_turns or []
+    # 多轮音频/文本追加后，raw_text 是各轮累积结果；"最新回答"应只取最近
+    # 一轮学生发言，完整对话历史仍通过 turns 传给模型。
+    latest_student = next(
+        (t for t in reversed(turns) if t.role == "student"), None
+    )
     result = await state.companion.suggest_turn(
-        response_text=resp.raw_text or "",
-        turns=resp.companion_turns,
+        response_text=(latest_student.content if latest_student else resp.raw_text) or "",
+        turns=turns,
         topic_title=topic.title if topic else "",
         stimulus_material=topic.stimulus_material or "" if topic else "",
         student_grade=resp.student.grade if resp.student else 4,

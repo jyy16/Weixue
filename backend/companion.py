@@ -113,6 +113,7 @@ class CompanionEngine:
                 temperature=0.3,
                 max_tokens=1000,
                 timeout=SUGGEST_LLM_TIMEOUT,
+                json_mode=True,
             )
             return self._normalize(raw)
         except Exception as exc:

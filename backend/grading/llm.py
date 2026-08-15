@@ -62,10 +62,13 @@ class LLMClient:
         temperature: float = 0.3,
         max_tokens: int = 2000,
         timeout: float = 120.0,
+        json_mode: bool = False,
     ) -> str:
         if self.api_style == "anthropic":
             return await self._chat_anthropic(messages, temperature, max_tokens, timeout)
-        return await self._chat_openai(messages, temperature, max_tokens, timeout)
+        return await self._chat_openai(
+            messages, temperature, max_tokens, timeout, json_mode=json_mode
+        )
 
     async def _chat_openai(
         self,
@@ -73,7 +76,18 @@ class LLMClient:
         temperature: float,
         max_tokens: int,
         timeout: float,
+        json_mode: bool = False,
     ) -> str:
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        # JSON mode forces OpenAI-compatible providers to emit a valid JSON
+        # object instead of prose, which is exactly what chat_json needs.
+        if json_mode and self.provider in {"openai", "deepseek", "dashscope"}:
+            payload["response_format"] = {"type": "json_object"}
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{self.base_url}/chat/completions",
@@ -81,15 +95,10 @@ class LLMClient:
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
+                json=payload,
             )
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            return resp.json()["choices"][0]["message"]["content"] or ""
 
     async def _chat_anthropic(
         self,
@@ -131,7 +140,7 @@ class LLMClient:
     @staticmethod
     def _extract_json(raw: str) -> str:
         """Extract the JSON object from an LLM reply (handles code fences and prose)."""
-        text = raw.strip()
+        text = str(raw or "").strip()
         # 去掉 Markdown 代码围栏（```json / ```）
         if text.startswith("```"):
             text = text.split("\n", 1)[1] if "\n" in text else text[3:]
@@ -147,11 +156,13 @@ class LLMClient:
 
     async def chat_json(self, messages: list[dict], **kwargs) -> dict:
         """Call LLM and parse the response as JSON, with one strict-JSON retry."""
-        raw = await self.chat(messages, **kwargs)
+        json_mode = bool(kwargs.pop("json_mode", False))
+        raw = await self.chat(messages, json_mode=json_mode, **kwargs)
         try:
             return json.loads(self._extract_json(raw))
         except (ValueError, TypeError) as exc:
-            # 常见于 max_tokens 截断或模型在字符串里输出字面换行：明确要求只输出合法 JSON 重试一次。
+            # 首次输出不是合法 JSON（空内容 / 散文 / max_tokens 截断）。
+            # 重试时显式开启 JSON 模式，从接口层面约束模型只输出 JSON。
             retry_messages = [
                 *messages,
                 {
@@ -163,5 +174,5 @@ class LLMClient:
                     ),
                 },
             ]
-            raw2 = await self.chat(retry_messages, **kwargs)
+            raw2 = await self.chat(retry_messages, json_mode=True, **kwargs)
             return json.loads(self._extract_json(raw2))

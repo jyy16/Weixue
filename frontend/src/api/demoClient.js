@@ -242,15 +242,29 @@ export const quickRating = (rid, data) => {
   return ok(_parseResponse(response));
 };
 
-export const importAudio = (cid, studentId, topicId, file, source) => {
-  let resp = _data.responses.find(
-    r => r.student_id === studentId && r.topic_id === topicId
-  );
+export const importAudio = (cid, studentId, topicId, file, source, responseId) => {
+  let resp =
+    (responseId && _data.responses.find(r => r.id === responseId)) ||
+    _data.responses.find(r => r.student_id === studentId && r.topic_id === topicId);
   if (!resp) {
     resp = { id: Math.max(0, ..._data.responses.map(r => r.id)) + 1, student_id: studentId, topic_id: topicId };
     _data.responses.push(resp);
   }
-  resp.raw_text = DEMO_TRANSCRIPT;
+  if (responseId) {
+    // 直播多轮录音：追加本轮转写，与真实后端 append 语义一致。
+    resp.raw_text = [resp.raw_text, DEMO_TRANSCRIPT].filter(Boolean).join('\n');
+    (_dialogue[resp.id] ||= []).push({
+      id: Date.now(), response_id: resp.id, role: 'student',
+      content: DEMO_TRANSCRIPT, turn_type: '', created_at: new Date().toISOString(),
+    });
+  } else {
+    // 管理页/首轮导入：替换整段回答与对话，与真实后端 replace 语义一致。
+    resp.raw_text = DEMO_TRANSCRIPT;
+    _dialogue[resp.id] = [{
+      id: Date.now(), response_id: resp.id, role: 'student',
+      content: DEMO_TRANSCRIPT, turn_type: '', created_at: new Date().toISOString(),
+    }];
+  }
   resp.source = source || 'audio';
   resp.cleaned_text = '';
   resp.ai_dimension_scores = null;
@@ -259,15 +273,8 @@ export const importAudio = (cid, studentId, topicId, file, source) => {
   resp.teacher_rating = '';
   resp.processing_status = 'submitted';
   _status[resp.id] = 'submitted';
-  // 首轮发言也要进对话轮次（与真实后端一致），否则学生端轮询/时间线会丢第一轮。
-  if (!(_dialogue[resp.id] || []).some(t => t.role === 'student')) {
-    (_dialogue[resp.id] ||= []).push({
-      id: Date.now(), response_id: resp.id, role: 'student',
-      content: DEMO_TRANSCRIPT, turn_type: '', created_at: new Date().toISOString(),
-    });
-  }
   _persist();
-  return ok(_parseResponse(resp));
+  return ok({ ..._parseResponse(resp), transcript: DEMO_TRANSCRIPT });
 };
 export const importText = (cid, studentId, topicId, text, source) => {
   let resp = _data.responses.find(r => r.student_id === studentId && r.topic_id === topicId);
@@ -410,6 +417,11 @@ export const appendTurn = (rid, data) => {
     resp.teacher_rating = '';
     resp.processing_status = 'submitted';
     _status[rid] = 'submitted';
+    // 与真实后端 append_companion_turn / import_audio 一致：满 3 轮自动结束对话。
+    const studentRounds = (_dialogue[rid] || []).filter(t => t.role === 'student').length;
+    if (studentRounds >= 3 && !resp.dialogue_finished) {
+      resp.dialogue_finished = 'auto';
+    }
   }
   _persist();
   return ok(_parseResponse(resp));
@@ -854,9 +866,14 @@ export const getFeishuBitableStatus = () => ok({
 
 export const syncFeishuBitable = () => ok({
   status: 'ok',
-  synced: 0,
-  skipped: 0,
-  errors: [],
+  configured: true,
+  tables: {
+    courses: { created: 0, updated: 0, errors: 0, skipped: 0 },
+    topics: { created: 0, updated: 0, errors: 0, skipped: 0 },
+    students: { created: 0, updated: 0, errors: 0, skipped: 0 },
+    responses: { created: 0, updated: 0, errors: 0, skipped: 0 },
+    prep_plans: { created: 0, updated: 0, errors: 0, skipped: 0 },
+  },
 });
 
 export const pullFeishuBitable = () => ok({

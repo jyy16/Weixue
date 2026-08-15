@@ -68,6 +68,14 @@ export default function LiveCockpit() {
   const studentTurnCount = (rid) =>
     (liveDialogue[rid] || []).filter(t => t.role === 'student').length;
 
+  // 对话已结束（任一方结束 / 后端自动满 3 轮）时统一显示“对话已结束”，
+  // 避免残留的 awaiting_teacher 让卡片一直停在“待老师发回”。
+  const phaseFor = (resp) => {
+    if (!resp) return null;
+    if (liveFinished[resp.id] || resp.dialogue_finished) return 'done';
+    return liveTurnPhase[resp.id] || null;
+  };
+
   // 需要老师出手的信号（按优先级排序展示）
   const studentSignals = (student) => {
     const resp = respFor(student.id);
@@ -313,7 +321,7 @@ export default function LiveCockpit() {
     const status = statusOf(student.id);
     const meta = STATUS_META[status] || STATUS_META.not_started;
     const signals = studentSignals(student);
-    const phase = resp ? liveTurnPhase[resp.id] : null;
+    const phase = resp ? phaseFor(resp) : null;
     const phaseMeta = {
       awaiting_teacher: { label: '待老师发回', cls: 'bg-amber-100 text-amber-700' },
       awaiting_student: { label: '等学生发言', cls: 'bg-blue-100 text-blue-600' },
@@ -494,7 +502,7 @@ export default function LiveCockpit() {
                             awaiting_student: '等学生发言',
                             ai_processing: 'AI 处理中',
                             done: '对话已结束',
-                          }[focusedResp ? liveTurnPhase[focusedResp.id] : null] ||
+                          }[focusedResp ? phaseFor(focusedResp) : null] ||
                           STATUS_META[statusOf(focusedStudent.id)]?.label ||
                           ''
                         }`}

@@ -36,6 +36,7 @@ function _pollOnce(courseId) {
           r.teacher_reviewed ? 1 : 0,
           JSON.stringify(r.teacher_dimension_scores || null),
           (r.raw_text || '').length,
+          r.dialogue_finished || '',
         ].join('|');
         if (_lastPollSig.get(r.id) === sig) return;
         _lastPollSig.set(r.id, sig);
