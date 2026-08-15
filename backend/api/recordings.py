@@ -11,55 +11,77 @@ from asr import ASRClient, ASRError
 from database import (
     AudioRecording, CompanionTurn, DebateTopic, Student, StudentResponse, get_db,
 )
-from schemas import StudentResponseOut, TextImportRequest
+from schemas import AudioImportOut, StudentResponseOut, TextImportRequest
 
 from . import state
 
 
 router = APIRouter(tags=["recordings"])
 
-def _ensure_first_student_turn(db: Session, resp, content: str) -> None:
-    """Record the first oral round as a CompanionTurn.
+def _store_student_transcript(resp, content: str, *, append: bool) -> None:
+    """Persist one transcript with explicit replace/append semantics.
 
-    The live classroom/assessment reads the dialogue via companion_turns;
-    without this, the student's initial answer only lived in raw_text and
-    disappeared from the dialogue timeline (and from the student window's
-    3s poll). Subsequent rounds go through append_companion_turn.
+    Management-page imports replace the whole answer and its dialogue. Live
+    student recordings append a new student turn and extend ``raw_text`` so
+    polling and the final assessment both retain every round.
     """
-    if not content or not str(content).strip():
+    text = str(content or "").strip()
+    if not text:
         return
-    if resp.id is None:
-        # 新建的作答还没落库（import_text 未 flush）：先持久化拿到
-        # response_id，否则 CompanionTurn 外键会是 None 触发非空约束错误。
-        db.flush()
-    if any(t.role == "student" for t in (resp.companion_turns or [])):
-        return
-    db.add(
-        CompanionTurn(
-            response_id=resp.id,
-            role="student",
-            content=str(content).strip(),
-            turn_type="",
-        )
+
+    if append:
+        previous = (resp.raw_text or "").strip()
+        resp.raw_text = f"{previous}\n{text}" if previous else text
+    else:
+        resp.raw_text = text
+        resp.companion_turns.clear()
+
+    resp.companion_turns.append(
+        CompanionTurn(role="student", content=text, turn_type="")
     )
 
-@router.post("/api/courses/{cid}/audio/import", response_model=StudentResponseOut)
+@router.post("/api/courses/{cid}/audio/import", response_model=AudioImportOut)
 async def import_audio(
     cid: int,
     student_id: int = Form(...),
     topic_id: int = Form(...),
     file: UploadFile = File(...),
     source: str = Form("audio"),
+    response_id: int | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Upload classroom audio, transcribe via ASR (mock / dashscope / openai),
-    store the transcript as raw_text, and reset stale assessment results."""
+    and reset stale assessment results.
+
+    With ``response_id`` the transcript is appended as a new live-dialogue
+    student turn. Without it, the upload keeps the management-page behavior
+    of replacing the existing answer for the same student and topic.
+    """
     student = db.query(Student).get(student_id)
     topic = db.query(DebateTopic).get(topic_id)
     if not student or student.course_id != cid or not topic or topic.course_id != cid:
         raise HTTPException(400, "student/topic not found in course")
     if source not in {"audio", "student_device", "teacher"}:
         raise HTTPException(400, f"invalid source: {source}")
+
+    append_round = response_id is not None
+    if append_round:
+        resp = db.get(StudentResponse, response_id)
+        if (
+            not resp
+            or resp.student_id != student_id
+            or resp.topic_id != topic_id
+        ):
+            raise HTTPException(400, "response does not match student/topic")
+    else:
+        resp = (
+            db.query(StudentResponse)
+            .filter(
+                StudentResponse.student_id == student_id,
+                StudentResponse.topic_id == topic_id,
+            )
+            .first()
+        )
 
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in state.ALLOWED_AUDIO_EXT:
@@ -88,14 +110,6 @@ async def import_audio(
         state._remove_audio_file(dest)
         raise HTTPException(500, f"转写异常：{exc}")
 
-    resp = (
-        db.query(StudentResponse)
-        .filter(
-            StudentResponse.student_id == student_id,
-            StudentResponse.topic_id == topic_id,
-        )
-        .first()
-    )
     if resp is None:
         resp = StudentResponse(
             student_id=student_id, topic_id=topic_id, raw_text="", source=source
@@ -115,9 +129,9 @@ async def import_audio(
     db.flush()
     resp.audio_recording_id = recording.id
 
-    # A new transcript invalidates the previous assessment
-    resp.raw_text = transcript
-    _ensure_first_student_turn(db, resp, transcript)
+    # A new transcript invalidates the previous assessment. Live rounds append
+    # to the aggregate answer; management re-uploads replace it.
+    _store_student_transcript(resp, transcript, append=append_round)
     resp.cleaned_text = ""
     resp.source = source
     resp.ai_dimension_scores = None
@@ -135,7 +149,9 @@ async def import_audio(
     resp.processing_status = "submitted"
     db.commit()
     db.refresh(resp)
-    return resp
+    return AudioImportOut.model_validate(resp).model_copy(
+        update={"transcript": transcript}
+    )
 
 @router.post("/api/courses/{cid}/responses/text", response_model=StudentResponseOut)
 async def import_text(
@@ -167,9 +183,9 @@ async def import_text(
         )
         db.add(resp)
 
-    # New content invalidates the previous assessment
-    resp.raw_text = text
-    _ensure_first_student_turn(db, resp, text)
+    # Manual imports replace the current answer. Subsequent student-window text
+    # rounds use /responses/{rid}/turns and therefore keep append semantics.
+    _store_student_transcript(resp, text, append=False)
     resp.cleaned_text = ""
     resp.source = body.source or "manual"
     resp.ai_dimension_scores = None

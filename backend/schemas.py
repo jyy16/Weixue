@@ -140,6 +140,16 @@ class StudentResponseOut(BaseModel):
     class Config:
         from_attributes = True
 
+
+class AudioImportOut(StudentResponseOut):
+    """Audio import result plus the transcript produced for this upload.
+
+    ``raw_text`` may contain all accumulated live-dialogue rounds, while this
+    field always contains only the just-transcribed recording so the student
+    UI can render the new bubble without guessing.
+    """
+    transcript: str = ""
+
 class TeacherReview(BaseModel):
     """Teacher overrides AI assessment on specific dimensions."""
     dimension_scores: Optional[dict[str, str]] = None
